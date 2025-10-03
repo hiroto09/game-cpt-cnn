@@ -20,7 +20,7 @@ if not capture.isOpened():
     exit()
 
 interval = 12  # 1分間に5回（60/5=12秒ごと）
-window = 60    # 集計ウィンドウ（秒）
+window = 120    # 集計ウィンドウ（秒）
 results = []   # 推論結果を保存
 window_start = time.time()
 last_pred_time = time.time()
