@@ -7,29 +7,37 @@ import os
 from dotenv import load_dotenv
 from tensorflow.keras.models import load_model
 
-load_dotenv() 
+load_dotenv()
 
 # ---- CNN モデルの準備 ----
 model = load_model("./saved_model/game_classifier.h5")
-class_names = ["何もしてない","人生ゲーム", "スマブラ"]  # dataset のフォルダ名に合わせる
+
+# IDと日本語名の対応
+CLASS_MAP = {
+    0: "何もしてない",
+    1: "人生ゲーム",
+    2: "スマブラ"
+}
 
 # ---- キャプチャーボードを開く ----
-capture = cv2.VideoCapture(0)  # 環境に応じて 0,1,2 を変更
+capture = cv2.VideoCapture(0)  # カメラ番号は環境に応じて変更
 if not capture.isOpened():
     print("キャプチャーボードが開けませんでした")
     exit()
 
-interval = 12  # 1分間に5回（60/5=12秒ごと）
-window = 120    # 集計ウィンドウ（秒）
-results = []   # 推論結果を保存
+interval = 12   # 12秒ごとに推論（1分間に5回）
+window = 120    # 集計ウィンドウ（2分）
+results = []
 window_start = time.time()
 last_pred_time = time.time()
 
-# ---- POST 先の API ----
-api_url = os.getenv("API_URL")  # 環境変数から取得
+# ---- APIエンドポイント ----
+api_url = os.getenv("API_URL")
 if not api_url:
     print("API_URL が設定されていません")
     exit()
+
+print("🎮 ゲーム推定開始... (qで終了)")
 
 while True:
     ret, frame = capture.read()
@@ -38,46 +46,45 @@ while True:
         break
 
     now = time.time()
+
     # intervalごとに推論
     if now - last_pred_time >= interval:
         img_resized = cv2.resize(frame, (128, 128))
         img_norm = img_resized / 255.0
-        img_input = np.expand_dims(img_norm, axis=0)  # (1,128,128,3)
+        img_input = np.expand_dims(img_norm, axis=0)
 
         pred = model.predict(img_input)
         class_id = int(np.argmax(pred))
         confidence = float(np.max(pred))
 
         results.append((class_id, confidence))
-        print(f"推論: {class_names[class_id]}, 信頼度: {confidence}")
+        print(f"推論: {CLASS_MAP[class_id]} (ID={class_id}), 信頼度: {confidence:.3f}")
 
         last_pred_time = now
 
     # window秒ごとに集計してAPI送信
     if now - window_start >= window and results:
-        # 最頻値のクラスIDを取得
         class_ids = [r[0] for r in results]
         most_common_id = max(set(class_ids), key=class_ids.count)
-        # そのクラスの最大信頼度
         max_conf = max([r[1] for r in results if r[0] == most_common_id])
 
         result = {
-            "class": class_names[most_common_id],
+            "class_id": most_common_id,
             "confidence": max_conf,
             "timestamp": datetime.datetime.now().isoformat()
         }
-        print("API送信:", result)
 
+        print("📡 API送信:", result)
         try:
             response = requests.post(api_url, json=result, timeout=10)
             if response.status_code == 200:
-                print("API 送信成功:", response.json())
+                print("✅ API 送信成功:", response.json())
             else:
-                print("API エラー:", response.status_code, response.text)
+                print("⚠️ API エラー:", response.status_code, response.text)
         except Exception as e:
-            print("API 送信エラー:", e)
+            print("⚠️ API 送信エラー:", e)
 
-        # リストとwindow開始時刻をリセット
+        # リセット
         results = []
         window_start = now
 
