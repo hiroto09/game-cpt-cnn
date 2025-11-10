@@ -74,9 +74,17 @@ while True:
             "timestamp": datetime.datetime.now().isoformat()
         }
 
+        # 🔹 最後に撮影した1枚だけをJPEGに変換
+        _, img_encoded = cv2.imencode(".jpg", frame)
+
         print("📡 API送信:", result)
         try:
-            response = requests.post(api_url, json=result, timeout=10)
+            response = requests.post(
+                api_url,
+                data=result,  # ← JSONではなくformデータ
+                files={"image": ("latest_frame.jpg", img_encoded.tobytes(), "image/jpeg")},
+                timeout=10
+            )
             if response.status_code == 200:
                 print("✅ API 送信成功:", response.json())
             else:
