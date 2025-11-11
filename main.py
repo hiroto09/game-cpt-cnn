@@ -16,7 +16,8 @@ model = load_model("./saved_model/game_classifier.h5")
 CLASS_MAP = {
     0: "何もしてない",
     1: "人生ゲーム",
-    2: "スマブラ"
+    2: "スマブラ",
+    3: "マリオカート",
 }
 
 # ---- キャプチャーボードを開く ----
