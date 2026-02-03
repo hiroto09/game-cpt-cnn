@@ -1,3 +1,5 @@
-tensorflow
-opencv-python
+opencv-python-headless
 numpy
+requests
+python-dotenv
+tensorflow-lite-runtime
