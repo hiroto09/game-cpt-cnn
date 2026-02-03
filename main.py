@@ -26,7 +26,7 @@ if not capture.isOpened():
     print("キャプチャーボードが開けませんでした")
     exit()
 
-interval = 12   # 12秒ごとに推論（1分間に5回）
+interval = 12   
 window = 120    # 集計ウィンドウ（2分）
 results = []
 window_start = time.time()
@@ -59,7 +59,6 @@ while True:
         confidence = float(np.max(pred))
 
         results.append((class_id, confidence))
-        print(f"推論: {CLASS_MAP[class_id]} (ID={class_id}), 信頼度: {confidence:.3f}")
 
         last_pred_time = now
 
@@ -86,10 +85,6 @@ while True:
                 files={"image": ("latest_frame.jpg", img_encoded.tobytes(), "image/jpeg")},
                 timeout=10
             )
-            if response.status_code == 200:
-                print("✅ API 送信成功:", response.json())
-            else:
-                print("⚠️ API エラー:", response.status_code, response.text)
         except Exception as e:
             print("⚠️ API 送信エラー:", e)
 
