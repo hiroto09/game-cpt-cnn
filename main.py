@@ -9,7 +9,9 @@ from tensorflow.keras.models import load_model
 
 load_dotenv()
 
-# ---- CNN モデルの準備 ----
+# =========================
+# CNN モデルの準備
+# =========================
 model = load_model("./saved_model/game_classifier.h5")
 
 # IDと日本語名の対応
@@ -20,81 +22,92 @@ CLASS_MAP = {
     3: "マリオカート",
 }
 
-# ---- キャプチャーボードを開く ----
-capture = cv2.VideoCapture(0)  # カメラ番号は環境に応じて変更
+# =========================
+# キャプチャーボード
+# =========================
+capture = cv2.VideoCapture(0)
 if not capture.isOpened():
-    print("キャプチャーボードが開けませんでした")
+    print("❌ キャプチャーボードが開けませんでした")
     exit()
 
-interval = 12   
-window = 120    # 集計ウィンドウ（2分）
+# =========================
+# 設定値
+# =========================
+INTERVAL = 12          # 推論間隔（秒）
+WINDOW = 120           # 集計ウィンドウ（秒）
+
 results = []
 window_start = time.time()
 last_pred_time = time.time()
 
-# ---- APIエンドポイント ----
+# =========================
+# API
+# =========================
 api_url = os.getenv("API_URL")
 if not api_url:
-    print("API_URL が設定されていません")
+    print("❌ API_URL が設定されていません")
     exit()
 
 print("🎮 ゲーム推定開始... (qで終了)")
 
+# =========================
+# メインループ
+# =========================
 while True:
     ret, frame = capture.read()
     if not ret:
-        print("映像を取得できませんでした")
+        print("⚠️ 映像を取得できませんでした")
         break
 
     now = time.time()
 
-    # intervalごとに推論
-    if now - last_pred_time >= interval:
+    # ---- interval ごとに推論 ----
+    if now - last_pred_time >= INTERVAL:
         img_resized = cv2.resize(frame, (128, 128))
         img_norm = img_resized / 255.0
         img_input = np.expand_dims(img_norm, axis=0)
 
-        pred = model.predict(img_input)
+        pred = model.predict(img_input, verbose=0)
         class_id = int(np.argmax(pred))
         confidence = float(np.max(pred))
 
         results.append((class_id, confidence))
-
         last_pred_time = now
 
-    # window秒ごとに集計してAPI送信
-    if now - window_start >= window and results:
+    # ---- window 秒ごとに集計して API 送信 ----
+    if now - window_start >= WINDOW and results:
         class_ids = [r[0] for r in results]
         most_common_id = max(set(class_ids), key=class_ids.count)
-        max_conf = max([r[1] for r in results if r[0] == most_common_id])
+        max_conf = max(r[1] for r in results if r[0] == most_common_id)
 
-        result = {
+        payload = {
             "class_id": most_common_id,
-            "confidence": max_conf,
+            "class_name": CLASS_MAP.get(most_common_id, "unknown"),
+            "confidence": round(max_conf, 3),
             "timestamp": datetime.datetime.now().isoformat()
         }
 
-        # 🔹 最後に撮影した1枚だけをJPEGに変換
-        _, img_encoded = cv2.imencode(".jpg", frame)
-
-        print("📡 API送信:", result)
+        print("📡 API送信:", payload)
         try:
-            response = requests.post(
+            requests.post(
                 api_url,
-                data=result,  # ← JSONではなくformデータ
-                files={"image": ("latest_frame.jpg", img_encoded.tobytes(), "image/jpeg")},
+                data=payload,   # ← 画像なし・formデータのみ
                 timeout=10
             )
         except Exception as e:
-            print("⚠️ API 送信エラー:", e)
+            print("⚠️ API送信エラー:", e)
 
         # リセット
-        results = []
+        results.clear()
         window_start = now
 
+    # ---- 表示（不要なら丸ごと消してOK）----
     cv2.imshow("Capture", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
+# =========================
+# 後処理
+# =========================
 capture.release()
 cv2.destroyAllWindows()
