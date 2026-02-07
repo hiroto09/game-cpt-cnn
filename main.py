@@ -9,14 +9,25 @@ import tensorflow as tf
 
 load_dotenv()
 
-# ---- TFLite モデルの準備 ----
-interpreter = tf.lite.Interpreter(model_path="./saved_model/game_classifier.tflite")
+# =========================
+# 設定値
+# =========================
+INTERVAL = 12          # 推論間隔（秒）
+WINDOW = 120           # 集計ウィンドウ（秒）
+CONF_THRESHOLD = 0.6   # 信頼度しきい値
+IGNORE_CLASS_ID = 0    # 「何もしてない」
+
+# =========================
+# TFLite モデル準備
+# =========================
+interpreter = tf.lite.Interpreter(
+    model_path="./saved_model/game_classifier.tflite"
+)
 interpreter.allocate_tensors()
 
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-# IDと日本語名の対応
 CLASS_MAP = {
     0: "何もしてない",
     1: "人生ゲーム",
@@ -24,30 +35,34 @@ CLASS_MAP = {
     3: "マリオカート",
 }
 
-# ---- カメラを開く ----
+# =========================
+# カメラ準備
+# =========================
 capture = cv2.VideoCapture(0)
 capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 if not capture.isOpened():
-    print("カメラが開けませんでした")
+    print("❌ カメラが開けませんでした")
     exit()
 
-interval = 12       # 推論間隔（秒）
-window = 120        # 集計ウィンドウ（秒）
-results = []
+# =========================
+# API
+# =========================
+api_url = os.getenv("API_URL")
+if not api_url:
+    print("❌ API_URL が設定されていません")
+    exit()
 
+print("🎮 ゲーム推定開始（画像送信なし / 軽量モード）")
+
+results = []
 window_start = time.time()
 last_pred_time = 0
 
-# ---- APIエンドポイント ----
-api_url = os.getenv("API_URL")
-if not api_url:
-    print("API_URL が設定されていません")
-    exit()
-
-print("🎮 ゲーム推定開始（Raspberry Pi） qで終了")
-
+# =========================
+# メインループ
+# =========================
 while True:
     ret, frame = capture.read()
     if not ret:
@@ -57,60 +72,62 @@ while True:
     now = time.time()
 
     # ---- interval ごとに推論 ----
-    if now - last_pred_time >= interval:
+    if now - last_pred_time >= INTERVAL:
         img = cv2.resize(frame, (128, 128))
         img = img.astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0)
 
-        interpreter.set_tensor(input_details[0]['index'], img)
+        interpreter.set_tensor(input_details[0]["index"], img)
         interpreter.invoke()
-        pred = interpreter.get_tensor(output_details[0]['index'])
+        pred = interpreter.get_tensor(output_details[0]["index"])
 
         class_id = int(np.argmax(pred))
         confidence = float(np.max(pred))
 
-        results.append((class_id, confidence))
+        # ---- フィルタ条件 ----
+        if (
+            confidence >= CONF_THRESHOLD and
+            class_id != IGNORE_CLASS_ID
+        ):
+            results.append((class_id, confidence))
+
         last_pred_time = now
 
+    # ---- window 秒ごとに集計して送信 ----
+    if now - window_start >= WINDOW:
+        if results:
+            class_ids = [r[0] for r in results]
+            most_common_id = max(set(class_ids), key=class_ids.count)
 
-    # ---- window 秒ごとに集計して API 送信 ----
-    if now - window_start >= window and results:
-        class_ids = [r[0] for r in results]
-        most_common_id = max(set(class_ids), key=class_ids.count)
-        max_conf = max(r[1] for r in results if r[0] == most_common_id)
-
-        payload = {
-            "class_id": most_common_id,
-            "confidence": max_conf,
-            "timestamp": datetime.datetime.now().isoformat()
-        }
-
-        _, img_encoded = cv2.imencode(".jpg", frame)
-
-
-        try:
-            requests.post(
-                api_url,
-                data=payload,
-                files={
-                    "image": (
-                        "latest_frame.jpg",
-                        img_encoded.tobytes(),
-                        "image/jpeg"
-                    )
-                },
-                timeout=10
+            max_conf = max(
+                r[1] for r in results if r[0] == most_common_id
             )
-        except Exception as e:
-            print("⚠️ API送信失敗:", e)
+
+            payload = {
+                "class_id": most_common_id,
+                "class_name": CLASS_MAP[most_common_id],
+                "confidence": round(max_conf, 3),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+
+            try:
+                requests.post(
+                    api_url,
+                    json=payload,
+                    timeout=10
+                )
+                print(
+                    f"📤 送信: {payload['class_name']} "
+                    f"(conf={payload['confidence']})"
+                )
+            except Exception as e:
+                print("⚠️ API送信失敗:", e)
+
+        else:
+            print("ℹ️ 有効な推定結果なし（送信スキップ）")
 
         results.clear()
         window_start = now
 
-    # ---- 表示（不要なら消してOK）----
-    cv2.imshow("Capture", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
-
-capture.release()
-cv2.destroyAllWindows()
+    # ---- 完全ヘッドレス運用 ----
+    time.sleep(0.01)
