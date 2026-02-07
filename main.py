@@ -54,11 +54,14 @@ if not api_url:
     print("❌ API_URL が設定されていません")
     exit()
 
-print("🎮 ゲーム推定開始（画像送信なし / 軽量モード）")
+print("🎮 ゲーム推定開始（状態変化時のみ送信）")
 
 results = []
 window_start = time.time()
 last_pred_time = 0
+
+# ★ 前回送信したクラスID
+last_sent_class_id = None
 
 # =========================
 # メインループ
@@ -93,7 +96,7 @@ while True:
 
         last_pred_time = now
 
-    # ---- window 秒ごとに集計して送信 ----
+    # ---- window 秒ごとに集計 ----
     if now - window_start >= WINDOW:
         if results:
             class_ids = [r[0] for r in results]
@@ -103,28 +106,32 @@ while True:
                 r[1] for r in results if r[0] == most_common_id
             )
 
-            payload = {
-                "class_id": most_common_id,
-                "class_name": CLASS_MAP[most_common_id],
-                "confidence": round(max_conf, 3),
-                "timestamp": datetime.datetime.now().isoformat()
-            }
+            # ★ 前回と違うときだけ送信
+            if most_common_id != last_sent_class_id:
+                payload = {
+                    "class_id": most_common_id,
+                    "class_name": CLASS_MAP[most_common_id],
+                    "confidence": round(max_conf, 3),
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
 
-            try:
-                requests.post(
-                    api_url,
-                    json=payload,
-                    timeout=10
-                )
+                try:
+                    requests.post(
+                        api_url,
+                        json=payload,
+                        timeout=10
+                    )
+                    print(
+                        f"📤 状態変化送信: {payload['class_name']} "
+                        f"(conf={payload['confidence']})"
+                    )
+                    last_sent_class_id = most_common_id
+                except Exception as e:
+                    print("⚠️ API送信失敗:", e)
+            else:
                 print(
-                    f"📤 送信: {payload['class_name']} "
-                    f"(conf={payload['confidence']})"
+                    f"⏸ 同一状態継続中: {CLASS_MAP[most_common_id]}（送信なし）"
                 )
-            except Exception as e:
-                print("⚠️ API送信失敗:", e)
-
-        else:
-            print("ℹ️ 有効な推定結果なし（送信スキップ）")
 
         results.clear()
         window_start = now
