@@ -26,8 +26,8 @@ if not capture.isOpened():
     print("キャプチャーボードが開けませんでした")
     exit()
 
-interval = 12
-window = 120    # 集計ウィンドウ（2分）
+interval = 10
+window = 130    
 results = []
 window_start = time.time()
 last_pred_time = time.time()
@@ -87,7 +87,6 @@ while True:
         results = []
         window_start = now
 
-    cv2.imshow("Capture", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
