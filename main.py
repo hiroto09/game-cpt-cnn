@@ -95,7 +95,6 @@ while True:
         class_id = int(np.argmax(pred))
         confidence = float(np.max(pred))
 
-        print(f"推定: {CLASS_MAP[class_id]} ({confidence:.2f})")
 
         results.append((class_id, confidence))
         last_pred_time = now
@@ -114,11 +113,9 @@ while True:
             "timestamp": datetime.datetime.now().isoformat()
         }
 
-        print("📡 API送信:", result)
 
         try:
             response = requests.post(api_url, json=result, timeout=10)
-            print("✅ 送信成功:", response.status_code)
         except Exception as e:
             print("⚠️ API送信エラー:", e)
 
