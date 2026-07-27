@@ -1,5 +1,5 @@
+google-genai
 opencv-python-headless
-numpy
-requests
+Pillow
 python-dotenv
-tensorflow-lite-runtime
+requests
