@@ -108,7 +108,7 @@ def recognize_boardgame(frame):
         try:
 
             response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model="gemini-2.5-flash",
                 contents=[
                     image,
                     PROMPT
