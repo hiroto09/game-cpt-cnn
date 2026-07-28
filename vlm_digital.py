@@ -40,7 +40,8 @@ with open("prompt.txt", "r", encoding="utf-8") as f:
 # 前回状態
 # ======================================
 last_packet = False
-
+last_api_check = 0
+CHECK_INTERVAL = 60
 # ======================================
 # カメラ
 # ======================================
@@ -60,6 +61,8 @@ def open_camera():
 
 
 capture = open_camera()
+cv2.namedWindow("Preview", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Preview", 960, 540)
 
 if capture is None:
     raise RuntimeError("❌ カメラが見つかりません")
@@ -157,59 +160,69 @@ try:
 
     while True:
 
-        try:
+        # 映像取得
+        ret, frame = capture.read()
 
-            response = requests.get(
-                SWITCH_API_URL,
-                timeout=5
-            )
+        if not ret:
+            frame = capture_image()
 
-            response.raise_for_status()
+        # プレビュー表示
+        cv2.imshow("Preview", frame)
 
-            packet = response.json()["packet"]
+        # qで終了
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-            # False → True の瞬間だけ推論
-            if packet and not last_packet:
+        # 60秒ごとにAPI確認
+        if time.time() - last_api_check >= CHECK_INTERVAL:
 
-                print("🎮 Switch起動検知")
+            last_api_check = time.time()
 
-                # キャプチャ
-                frame = capture_image()
+            try:
 
-                print("📷 キャプチャ完了")
+                response = requests.get(
+                    SWITCH_API_URL,
+                    timeout=5
+                )
 
-                # Gemini推論
-                print("🤖 推論開始")
+                response.raise_for_status()
 
-                result = recognize_boardgame(frame)
+                packet = response.json()["packet"]
 
-                print(result)
+                if packet and not last_packet:
 
-                # 結果送信
-                send_result(result)
+                    print("🎮 Switch起動検知")
 
-            elif packet:
+                    print("🤖 推論開始")
 
-                print("🎮 Switch起動中（監視のみ）")
+                    result = recognize_boardgame(frame)
 
-            else:
+                    print(result)
 
-                print("💤 Switch停止中")
+                    send_result(result)
 
-            last_packet = packet
+                elif packet:
 
-        except requests.RequestException as e:
+                    print("🎮 Switch起動中（監視のみ）")
 
-            print("通信エラー")
-            print(e)
+                else:
 
-        except Exception as e:
+                    print("💤 Switch停止中")
 
-            print("エラー")
-            print(e)
+                last_packet = packet
 
-        # 1分待機
-        time.sleep(60)
+            except requests.RequestException as e:
+
+                print("通信エラー")
+                print(e)
+
+            except Exception as e:
+
+                print("エラー")
+                print(e)
+
+        # CPU負荷軽減
+        time.sleep(0.01)
 
 except KeyboardInterrupt:
 
@@ -217,9 +230,8 @@ except KeyboardInterrupt:
 
 finally:
 
-    if capture is not None:
-        capture.release()
-
+    capture.release()
     cv2.destroyAllWindows()
 
     print("カメラを解放しました")
+
