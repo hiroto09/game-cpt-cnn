@@ -130,7 +130,7 @@ def recognize_boardgame(frame):
 
             if "503" in str(e):
                 print("503エラーのため30秒待機")
-                time.sleep(30)
+                time.sleep(60)
                 continue
 
             time.sleep(60)
