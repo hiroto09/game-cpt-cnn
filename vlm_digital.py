@@ -133,8 +133,7 @@ def recognize_boardgame(frame):
                 time.sleep(30)
                 continue
 
-            print("10秒後に再試行")
-            time.sleep(10)
+            time.sleep(60)
 
 # ======================================
 # 結果送信
