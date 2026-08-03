@@ -134,10 +134,6 @@ def write_prediction_log(
                 "========================================\n\n"
             )
 
-        print(
-            f"📝 ログ保存: {LOG_FILE}"
-        )
-
     except Exception as e:
 
         print(
@@ -204,10 +200,6 @@ def open_camera():
 
         if cap.isOpened():
 
-            print(
-                f"✅ カメラ{i}に接続"
-            )
-
             return cap
 
         cap.release()
@@ -256,11 +248,6 @@ def capture_image():
         return frame
 
 
-    print(
-        "⚠️ カメラ再接続"
-    )
-
-
     capture.release()
 
     time.sleep(2)
@@ -305,9 +292,6 @@ def recognize_boardgame(frame):
 
     try:
 
-        print(
-            "🤖 Gemini推論開始"
-        )
 
 
         response = client.models.generate_content(
@@ -509,14 +493,6 @@ def send_result(class_id):
             "================================"
         )
 
-        print(
-            "📤 結果送信"
-        )
-
-        print(
-            "URL:",
-            RESULT_API_URL
-        )
 
         print(
             "class_id:",
@@ -537,23 +513,10 @@ def send_result(class_id):
         )
 
 
-        print(
-            "HTTP Status:",
-            response.status_code
-        )
-
-        print(
-            "Response:",
-            response.text
-        )
-
 
         response.raise_for_status()
 
 
-        print(
-            "✅ 結果送信完了"
-        )
 
 
         return True
@@ -591,10 +554,6 @@ def reset_prediction_state():
 
     same_prediction_count = 0
 
-
-    print(
-        "🔄 推論状態をリセットしました"
-    )
 
 
 # ======================================
@@ -644,19 +603,11 @@ def process_prediction(result):
     )
 
     print(
-        "🎮 推定結果"
-    )
-
-    print(
         f"id: {class_id}"
     )
 
     print(
         f"信頼度: {confidence}"
-    )
-
-    print(
-        f"根拠: {reason}"
     )
 
     print(
@@ -692,14 +643,6 @@ def process_prediction(result):
     # ==================================
 
     if class_id == 0:
-
-        print(
-            "⚪ id=0"
-        )
-
-        print(
-            "🔍 ゲーム未検出のため推論を継続します"
-        )
 
 
         # 0も送信
@@ -739,20 +682,10 @@ def process_prediction(result):
         same_prediction_count = 1
 
 
-        print(
-            f"🎮 初回推定: id={class_id}"
-        )
-
-
         # 初回結果はすぐ送信
 
         send_result(
             class_id
-        )
-
-
-        print(
-            "🔍 2回目の推定を行います"
         )
 
 
@@ -770,11 +703,6 @@ def process_prediction(result):
 
         same_prediction_count += 1
 
-
-        print(
-            f"🎯 同じIDが連続 "
-            f"{same_prediction_count}回"
-        )
 
 
         # ==================================
