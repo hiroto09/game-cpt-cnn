@@ -737,7 +737,6 @@ except KeyboardInterrupt:
         "\n終了します"
     )
 
-
 finally:
 
     if capture is not None:
