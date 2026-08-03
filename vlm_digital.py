@@ -153,7 +153,7 @@ last_packet = False
 
 last_api_check = 0
 
-CHECK_INTERVAL = 60
+CHECK_INTERVAL = 300
 
 
 # ======================================
