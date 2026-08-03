@@ -153,7 +153,7 @@ last_packet = False
 
 last_api_check = 0
 
-CHECK_INTERVAL = 300
+CHECK_INTERVAL = 60
 
 
 # ======================================
@@ -184,10 +184,6 @@ def open_camera():
         cap = cv2.VideoCapture(i)
 
         if cap.isOpened():
-
-            print(
-                f"✅ カメラ{i}に接続"
-            )
 
             return cap
 
@@ -235,10 +231,6 @@ def capture_image():
 
         return frame
 
-    print(
-        "⚠️ カメラ再接続"
-    )
-
     capture.release()
 
     time.sleep(2)
@@ -278,10 +270,6 @@ def recognize_boardgame(frame):
     while True:
 
         try:
-
-            print(
-                "🤖 Gemini推論開始"
-            )
 
             response = client.models.generate_content(
 
@@ -465,18 +453,6 @@ def send_result(class_id):
 
     try:
 
-        print(
-            "================================"
-        )
-
-        print(
-            "📤 結果送信"
-        )
-
-        print(
-            "URL:",
-            RESULT_API_URL
-        )
 
         print(
             "class_id:",
@@ -497,23 +473,7 @@ def send_result(class_id):
         )
 
 
-        print(
-            "HTTP Status:",
-            response.status_code
-        )
-
-        print(
-            "Response:",
-            response.text
-        )
-
-
         response.raise_for_status()
-
-
-        print(
-            "✅ 結果送信完了"
-        )
 
         return True
 
