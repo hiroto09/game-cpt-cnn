@@ -19,13 +19,19 @@ RESULT_API_URL = os.getenv("RESULT_API_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not SWITCH_API_URL:
-    raise ValueError("SWITCH_API_URL が設定されていません")
+    raise ValueError(
+        "SWITCH_API_URL が設定されていません"
+    )
 
 if not RESULT_API_URL:
-    raise ValueError("RESULT_API_URL が設定されていません")
+    raise ValueError(
+        "RESULT_API_URL が設定されていません"
+    )
 
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY が設定されていません")
+    raise ValueError(
+        "GEMINI_API_KEY が設定されていません"
+    )
 
 
 # ======================================
@@ -41,8 +47,104 @@ client = genai.Client(
 # Prompt
 # ======================================
 
-with open("prompt.txt", "r", encoding="utf-8") as f:
+with open(
+    "prompt.txt",
+    "r",
+    encoding="utf-8"
+) as f:
+
     PROMPT = f.read()
+
+
+# ======================================
+# ログ設定
+# ======================================
+
+LOG_DIR = "logs"
+
+LOG_FILE = os.path.join(
+    LOG_DIR,
+    "game_prediction.log"
+)
+
+
+# logsディレクトリがなければ作成
+os.makedirs(
+    LOG_DIR,
+    exist_ok=True
+)
+
+
+# ======================================
+# ログ書き込み
+# ======================================
+
+def write_prediction_log(
+    result,
+    class_id,
+    confidence,
+    reason
+):
+
+    timestamp = time.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    try:
+
+        with open(
+            LOG_FILE,
+            "a",
+            encoding="utf-8"
+        ) as f:
+
+            f.write(
+                "========================================\n"
+            )
+
+            f.write(
+                f"日時: {timestamp}\n"
+            )
+
+            f.write(
+                f"id: {class_id}\n"
+            )
+
+            f.write(
+                f"信頼度: {confidence}\n"
+            )
+
+            f.write(
+                f"根拠: {reason}\n"
+            )
+
+            f.write(
+                "Gemini生回答:\n"
+            )
+
+            f.write(
+                result.strip()
+            )
+
+            f.write(
+                "\n"
+            )
+
+            f.write(
+                "========================================\n\n"
+            )
+
+        print(
+            f"📝 ログ保存: {LOG_FILE}"
+        )
+
+    except Exception as e:
+
+        print(
+            "⚠️ ログ保存エラー"
+        )
+
+        print(e)
 
 
 # ======================================
@@ -68,7 +170,9 @@ def open_camera():
 
         if cap.isOpened():
 
-            print(f"✅ カメラ{i}に接続")
+            print(
+                f"✅ カメラ{i}に接続"
+            )
 
             return cap
 
@@ -79,12 +183,17 @@ def open_camera():
 
 capture = open_camera()
 
+
 if capture is None:
 
-    raise RuntimeError("❌ カメラが見つかりません")
+    raise RuntimeError(
+        "❌ カメラが見つかりません"
+    )
 
 
+# ======================================
 # プレビューウィンドウ
+# ======================================
 
 cv2.namedWindow(
     "Preview",
@@ -112,7 +221,9 @@ def capture_image():
 
         return frame
 
-    print("⚠️ カメラ再接続")
+    print(
+        "⚠️ カメラ再接続"
+    )
 
     capture.release()
 
@@ -154,7 +265,9 @@ def recognize_boardgame(frame):
 
         try:
 
-            print("🤖 Gemini推論開始")
+            print(
+                "🤖 Gemini推論開始"
+            )
 
             response = client.models.generate_content(
 
@@ -175,13 +288,17 @@ def recognize_boardgame(frame):
                 "Geminiから応答がありません"
             )
 
+
         except Exception as e:
 
-            print("Geminiエラー")
+            print(
+                "Geminiエラー"
+            )
 
             print(e)
 
             error = str(e)
+
 
             # ==================================
             # 503
@@ -196,6 +313,7 @@ def recognize_boardgame(frame):
                 time.sleep(60)
 
                 continue
+
 
             # ==================================
             # 429
@@ -213,6 +331,7 @@ def recognize_boardgame(frame):
 
                 return None
 
+
             # ==================================
             # その他
             # ==================================
@@ -225,29 +344,33 @@ def recognize_boardgame(frame):
 
 
 # ======================================
-# Gemini結果からclass_idを取得
+# Gemini結果解析
 # ======================================
 
-def parse_class_id(result):
+def parse_result(result):
 
     if not result:
 
-        return None
+        return None, None, None
 
-    print("================================")
-    print("Gemini結果")
-    print(result)
-    print("================================")
+
+    class_id = None
+
+    confidence = None
+
+    reason = None
+
 
     for line in result.splitlines():
 
         line = line.strip()
 
-        # ------------------------------
-        # id: 27
-        # ------------------------------
 
-        if line.lower().startswith("id"):
+        # ==================================
+        # id
+        # ==================================
+
+        if line.lower().startswith("id:"):
 
             try:
 
@@ -258,22 +381,64 @@ def parse_class_id(result):
 
                 class_id = int(value)
 
-                return class_id
-
-            except (ValueError, IndexError):
+            except (
+                ValueError,
+                IndexError
+            ):
 
                 print(
                     "⚠️ IDの解析に失敗:",
                     line
                 )
 
-                return None
 
-    print(
-        "⚠️ Gemini結果からidを取得できません"
+        # ==================================
+        # 信頼度
+        # ==================================
+
+        elif line.startswith(
+            "信頼度:"
+        ):
+
+            try:
+
+                value = line.split(
+                    ":",
+                    1
+                )[1].strip()
+
+                confidence = value
+
+            except IndexError:
+
+                confidence = None
+
+
+        # ==================================
+        # 根拠
+        # ==================================
+
+        elif line.startswith(
+            "根拠:"
+        ):
+
+            try:
+
+                reason = line.split(
+                    ":",
+                    1
+                )[1].strip()
+
+            except IndexError:
+
+                reason = None
+
+
+    return (
+        class_id,
+        confidence,
+        reason
     )
-
-    return None
 
 
 # ======================================
@@ -284,8 +449,14 @@ def send_result(class_id):
 
     try:
 
-        print("================================")
-        print("📤 結果送信")
+        print(
+            "================================"
+        )
+
+        print(
+            "📤 結果送信"
+        )
+
         print(
             "URL:",
             RESULT_API_URL
@@ -295,6 +466,7 @@ def send_result(class_id):
             "class_id:",
             class_id
         )
+
 
         response = requests.post(
 
@@ -308,6 +480,7 @@ def send_result(class_id):
 
         )
 
+
         print(
             "HTTP Status:",
             response.status_code
@@ -318,11 +491,14 @@ def send_result(class_id):
             response.text
         )
 
+
         response.raise_for_status()
+
 
         print(
             "✅ 結果送信完了"
         )
+
 
     except requests.RequestException as e:
 
@@ -340,6 +516,7 @@ def send_result(class_id):
 try:
 
     while True:
+
 
         # ==================================
         # カメラ映像取得
@@ -383,6 +560,7 @@ try:
 
             last_api_check = time.time()
 
+
             try:
 
                 response = requests.get(
@@ -394,6 +572,7 @@ try:
                 )
 
                 response.raise_for_status()
+
 
                 packet = response.json()["packet"]
 
@@ -409,39 +588,101 @@ try:
                     )
 
 
-                    # ------------------------------
+                    # ==================================
                     # Gemini推論
-                    # ------------------------------
+                    # ==================================
 
                     result = recognize_boardgame(
                         frame
                     )
 
 
-                    # ------------------------------
-                    # class_id解析
-                    # ------------------------------
+                    # ==================================
+                    # 推定失敗
+                    # ==================================
 
-                    class_id = parse_class_id(
-                        result
-                    )
+                    if result is None:
 
-
-                    # ------------------------------
-                    # 解析成功
-                    # ------------------------------
-
-                    if class_id is not None:
-
-                        send_result(
-                            class_id
+                        print(
+                            "⚠️ Gemini推定失敗"
                         )
 
                     else:
 
-                        print(
-                            "⚠️ class_idを取得できなかったため送信しません"
+                        # ==================================
+                        # 結果解析
+                        # ==================================
+
+                        (
+                            class_id,
+                            confidence,
+                            reason
+                        ) = parse_result(
+                            result
                         )
+
+
+                        # ==================================
+                        # 結果表示
+                        # ==================================
+
+                        print(
+                            "================================"
+                        )
+
+                        print(
+                            "🎮 推定結果"
+                        )
+
+                        print(
+                            f"id: {class_id}"
+                        )
+
+                        print(
+                            f"信頼度: {confidence}"
+                        )
+
+                        print(
+                            f"根拠: {reason}"
+                        )
+
+                        print(
+                            "================================"
+                        )
+
+
+                        # ==================================
+                        # ログ保存
+                        # ==================================
+
+                        write_prediction_log(
+
+                            result=result,
+
+                            class_id=class_id,
+
+                            confidence=confidence,
+
+                            reason=reason
+
+                        )
+
+
+                        # ==================================
+                        # class_idが取得できた場合
+                        # ==================================
+
+                        if class_id is not None:
+
+                            send_result(
+                                class_id
+                            )
+
+                        else:
+
+                            print(
+                                "⚠️ class_idを取得できなかったため送信しません"
+                            )
 
 
                 elif packet:
@@ -458,7 +699,9 @@ try:
                     )
 
 
+                # ==================================
                 # 現在状態を保存
+                # ==================================
 
                 last_packet = packet
 
