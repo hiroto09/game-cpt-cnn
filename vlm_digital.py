@@ -67,8 +67,6 @@ LOG_FILE = os.path.join(
     "game_prediction.log"
 )
 
-
-# logsディレクトリがなければ作成
 os.makedirs(
     LOG_DIR,
     exist_ok=True
@@ -148,7 +146,7 @@ def write_prediction_log(
 
 
 # ======================================
-# 前回状態
+# Switch状態
 # ======================================
 
 last_packet = False
@@ -156,6 +154,23 @@ last_packet = False
 last_api_check = 0
 
 CHECK_INTERVAL = 60
+
+
+# ======================================
+# 推論状態
+# ======================================
+
+# 現在推論を行っているか
+inference_active = False
+
+# 推論確定済みか
+inference_confirmed = False
+
+# 直前に推定されたID
+last_prediction_id = None
+
+# 同じIDが連続した回数
+same_prediction_count = 0
 
 
 # ======================================
@@ -182,7 +197,6 @@ def open_camera():
 
 
 capture = open_camera()
-
 
 if capture is None:
 
@@ -367,7 +381,7 @@ def parse_result(result):
 
 
         # ==================================
-        # id
+        # ID
         # ==================================
 
         if line.lower().startswith("id:"):
@@ -402,12 +416,12 @@ def parse_result(result):
 
             try:
 
-                value = line.split(
-                    ":",
-                    1
-                )[1].strip()
-
-                confidence = value
+                confidence = (
+                    line.split(
+                        ":",
+                        1
+                    )[1].strip()
+                )
 
             except IndexError:
 
@@ -424,10 +438,12 @@ def parse_result(result):
 
             try:
 
-                reason = line.split(
-                    ":",
-                    1
-                )[1].strip()
+                reason = (
+                    line.split(
+                        ":",
+                        1
+                    )[1].strip()
+                )
 
             except IndexError:
 
@@ -499,6 +515,8 @@ def send_result(class_id):
             "✅ 結果送信完了"
         )
 
+        return True
+
 
     except requests.RequestException as e:
 
@@ -508,6 +526,229 @@ def send_result(class_id):
 
         print(e)
 
+        return False
+
+
+# ======================================
+# 推論状態リセット
+# ======================================
+
+def reset_prediction_state():
+
+    global inference_active
+    global inference_confirmed
+    global last_prediction_id
+    global same_prediction_count
+
+    inference_active = False
+    inference_confirmed = False
+    last_prediction_id = None
+    same_prediction_count = 0
+
+    print(
+        "🔄 推論状態をリセットしました"
+    )
+
+
+# ======================================
+# 推定結果処理
+# ======================================
+
+def process_prediction(
+    result
+):
+
+    global inference_active
+    global inference_confirmed
+    global last_prediction_id
+    global same_prediction_count
+
+
+    # ==================================
+    # 結果解析
+    # ==================================
+
+    (
+        class_id,
+        confidence,
+        reason
+    ) = parse_result(
+        result
+    )
+
+
+    if class_id is None:
+
+        print(
+            "⚠️ class_idを取得できませんでした"
+        )
+
+        return
+
+
+    # ==================================
+    # 結果表示
+    # ==================================
+
+    print(
+        "================================"
+    )
+
+    print(
+        "🎮 推定結果"
+    )
+
+    print(
+        f"id: {class_id}"
+    )
+
+    print(
+        f"信頼度: {confidence}"
+    )
+
+    print(
+        f"根拠: {reason}"
+    )
+
+    print(
+        "================================"
+    )
+
+
+    # ==================================
+    # ログ保存
+    # ==================================
+
+    write_prediction_log(
+
+        result=result,
+
+        class_id=class_id,
+
+        confidence=confidence,
+
+        reason=reason
+
+    )
+
+
+    # ==================================
+    # 0の場合
+    # ==================================
+    #
+    # 0は「ゲームなし」なので
+    # 何回続いても推論を継続する
+    #
+
+    if class_id == 0:
+
+        print(
+            "⚪ id=0 のため推論を継続します"
+        )
+
+        # 0も結果として送信
+        send_result(0)
+
+        # 0は連続判定の対象外
+        last_prediction_id = None
+        same_prediction_count = 0
+
+        inference_active = True
+        inference_confirmed = False
+
+        return
+
+
+    # ==================================
+    # 1～7の場合
+    # ==================================
+
+    # 初回のゲームID
+    if last_prediction_id is None:
+
+        last_prediction_id = class_id
+
+        same_prediction_count = 1
+
+        print(
+            f"🎮 初回推定: id={class_id}"
+        )
+
+        # 初回結果も送信
+        send_result(class_id)
+
+        print(
+            "🔍 もう一度同じIDが出るか確認します"
+        )
+
+        inference_active = True
+
+        return
+
+
+    # ==================================
+    # 前回と同じID
+    # ==================================
+
+    if class_id == last_prediction_id:
+
+        same_prediction_count += 1
+
+        print(
+            f"🎯 同じIDが連続 "
+            f"{same_prediction_count}回"
+        )
+
+
+    # ==================================
+    # 前回と違うID
+    # ==================================
+
+    else:
+
+        print(
+            f"🔄 ID変更: "
+            f"{last_prediction_id} → {class_id}"
+        )
+
+        last_prediction_id = class_id
+
+        same_prediction_count = 1
+
+        # 違う結果も送信
+        send_result(class_id)
+
+        print(
+            "🔍 新しいIDについて再確認します"
+        )
+
+        inference_active = True
+
+        return
+
+
+    # ==================================
+    # 同じIDが2回連続
+    # ==================================
+
+    if same_prediction_count >= 2:
+
+        print(
+            f"🎯 id={class_id} を確定しました"
+        )
+
+        print(
+            "🛑 Gemini推論を停止します"
+        )
+
+        inference_confirmed = True
+
+        inference_active = False
+
+    else:
+
+        inference_active = True
+
 
 # ======================================
 # メイン
@@ -516,7 +757,6 @@ def send_result(class_id):
 try:
 
     while True:
-
 
         # ==================================
         # カメラ映像取得
@@ -573,130 +813,116 @@ try:
 
                 response.raise_for_status()
 
-
                 packet = response.json()["packet"]
 
 
                 # ==================================
-                # False → True
+                # Switch ON
                 # ==================================
 
-                if packet and not last_packet:
+                if packet:
 
-                    print(
-                        "🎮 Switch起動検知"
-                    )
+                    # ----------------------------------
+                    # OFF → ON
+                    # ----------------------------------
 
-
-                    # ==================================
-                    # Gemini推論
-                    # ==================================
-
-                    result = recognize_boardgame(
-                        frame
-                    )
-
-
-                    # ==================================
-                    # 推定失敗
-                    # ==================================
-
-                    if result is None:
+                    if not last_packet:
 
                         print(
-                            "⚠️ Gemini推定失敗"
-                        )
-
-                    else:
-
-                        # ==================================
-                        # 結果解析
-                        # ==================================
-
-                        (
-                            class_id,
-                            confidence,
-                            reason
-                        ) = parse_result(
-                            result
-                        )
-
-
-                        # ==================================
-                        # 結果表示
-                        # ==================================
-
-                        print(
-                            "================================"
+                            "🎮 Switch起動検知"
                         )
 
                         print(
-                            "🎮 推定結果"
+                            "🔍 新しいゲームの推定を開始します"
                         )
+
+                        reset_prediction_state()
+
+                        inference_active = True
+
+
+                    # ----------------------------------
+                    # 推論中
+                    # ----------------------------------
+
+                    if inference_active:
 
                         print(
-                            f"id: {class_id}"
+                            "🤖 推論実行"
                         )
 
-                        print(
-                            f"信頼度: {confidence}"
+                        result = recognize_boardgame(
+                            frame
                         )
 
-                        print(
-                            f"根拠: {reason}"
-                        )
+                        if result is not None:
 
-                        print(
-                            "================================"
-                        )
-
-
-                        # ==================================
-                        # ログ保存
-                        # ==================================
-
-                        write_prediction_log(
-
-                            result=result,
-
-                            class_id=class_id,
-
-                            confidence=confidence,
-
-                            reason=reason
-
-                        )
-
-
-                        # ==================================
-                        # class_idが取得できた場合
-                        # ==================================
-
-                        if class_id is not None:
-
-                            send_result(
-                                class_id
+                            process_prediction(
+                                result
                             )
 
                         else:
 
                             print(
-                                "⚠️ class_idを取得できなかったため送信しません"
+                                "⚠️ Gemini推定失敗"
                             )
 
 
-                elif packet:
+                    # ----------------------------------
+                    # 確定後
+                    # ----------------------------------
 
-                    print(
-                        "🎮 Switch起動中（監視のみ）"
-                    )
+                    elif inference_confirmed:
 
+                        print(
+                            "🎯 ゲーム確定済み"
+                        )
+
+                        print(
+                            "Gemini推論は停止しています"
+                        )
+
+
+                    # ----------------------------------
+                    # 状態表示
+                    # ----------------------------------
+
+                    else:
+
+                        print(
+                            "🎮 Switch起動中"
+                        )
+
+
+                # ==================================
+                # Switch OFF
+                # ==================================
 
                 else:
 
                     print(
                         "💤 Switch停止中"
                     )
+
+
+                    # ----------------------------------
+                    # ON → OFF
+                    # ----------------------------------
+
+                    if last_packet:
+
+                        print(
+                            "🔌 Switchの電源OFFを検知"
+                        )
+
+                        print(
+                            "⚪ id=0を送信します"
+                        )
+
+                        send_result(0)
+
+                        # 推論状態を完全リセット
+                        reset_prediction_state()
 
 
                 # ==================================
@@ -736,6 +962,7 @@ except KeyboardInterrupt:
     print(
         "\n終了します"
     )
+
 
 finally:
 
