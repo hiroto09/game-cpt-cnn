@@ -17,6 +17,7 @@ load_dotenv()
 
 SWITCH_API_URL = os.getenv("SWITCH_API_URL")
 RESULT_API_URL = os.getenv("RESULT_API_URL")
+EVENTS_API_URL = os.getenv("EVENTS_API_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
@@ -24,14 +25,14 @@ if not SWITCH_API_URL:
     raise ValueError(
         "SWITCH_API_URL が設定されていません"
     )
-
-
 if not RESULT_API_URL:
     raise ValueError(
         "RESULT_API_URL が設定されていません"
     )
-
-
+if not EVENTS_API_URL:
+    raise ValueError(
+        "EVENTS_API_URL が設定されていません"
+    )    
 if not GEMINI_API_KEY:
     raise ValueError(
         "GEMINI_API_KEY が設定されていません"
@@ -61,13 +62,72 @@ if not os.path.exists(PROMPT_FILE):
     )
 
 
-with open(
-    PROMPT_FILE,
-    "r",
-    encoding="utf-8"
-) as f:
+def get_game_candidates():
+    """
+    StayWatch APIからdigitalゲーム一覧を取得し、
+    VLMの候補欄に使用する文字列を作成する。
+    """
+    try:
+        response = requests.get(
+            EVENTS_API_URL,
+            params={
+                "game_type": "digital"
+            },
+            timeout=10
+        )
 
-    PROMPT = f.read()
+        response.raise_for_status()
+
+        games = response.json()["data"]
+
+        candidates = "\n".join(
+            f'    "{game["ID"]}" : "{game["Name"]}",'
+            for game in games
+        )
+
+        print("🎮 digitalゲーム候補をAPIから取得しました")
+
+        for game in games:
+            print(
+                f'    ID: {game["ID"]}, '
+                f'Name: {game["Name"]}'
+            )
+
+        return candidates
+
+    except (requests.RequestException, KeyError, TypeError) as e:
+        print("❌ digitalゲーム候補の取得に失敗しました")
+        print(e)
+        return None
+
+
+def create_prompt():
+    """
+    prompt.txtを読み込み、
+    {GAME_CANDIDATES} をAPIから取得した候補一覧に置き換える。
+    """
+    with open(
+        PROMPT_FILE,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        prompt_template = f.read()
+
+    candidates = get_game_candidates()
+
+    if candidates is None:
+        raise RuntimeError(
+            "digitalゲーム候補を取得できないため、"
+            "Gemini推論を実行できません"
+        )
+
+    prompt = prompt_template.replace(
+        "{GAME_CANDIDATES}",
+        candidates
+    )
+
+    return prompt
 
 
 print(
@@ -189,13 +249,14 @@ last_packet = False
 # インターバル
 # ======================================
 
-# 通常時
-NORMAL_INTERVAL = 120
+# 通常時（3分）
+NORMAL_INTERVAL = 180
 
+# ゲーム確定後（30分）
+CONFIRMED_INTERVAL = 1800
 
-# エラー時
+# エラー時（5分）
 ERROR_INTERVAL = 300
-
 
 # 次回Switch確認時刻
 next_action_time = 0
@@ -207,8 +268,6 @@ next_action_time = 0
 
 # 推論を実行する状態か
 inference_active = False
-
-
 # 推論確定済みか
 inference_confirmed = False
 
@@ -373,46 +432,30 @@ def recognize_boardgame(frame):
             )
         )
 
-
+        # 推論直前にAPIから最新のゲーム候補を取得して
+        # prompt.txtの候補欄を更新する
+        prompt = create_prompt()
         response = client.models.generate_content(
-
             model="gemini-flash-latest",
-
             contents=[
                 image,
-                PROMPT
+                prompt
             ]
-
         )
 
-
-        print(
-            "🤖 Gemini API応答受信"
-        )
-
+        print("🤖 Gemini API応答受信")
 
         if response.text:
-
             gemini_result = response.text
 
-            print(
-                "✅ Gemini推論成功"
-            )
-
         else:
-
-            print(
-                "⚠️ Geminiから応答がありません"
-            )
-
+            print("⚠️ Geminiから応答がありません")
             gemini_error = True
 
 
     except Exception as e:
 
-        print(
-            "❌ Geminiエラー"
-        )
+        print("❌ Geminiエラー")
 
         print(e)
 
@@ -431,10 +474,6 @@ def start_gemini_inference(frame):
 
 
     if gemini_running:
-
-        print(
-            "⚠️ Gemini推論はすでに実行中です"
-        )
 
         return False
 
@@ -618,17 +657,11 @@ def send_result(class_id):
 
     try:
 
-        print(
-            "================================"
-        )
+        print("================================")
 
-        print(
-            "📤 結果送信"
-        )
+        print("📤 結果送信")
 
-        print(
-            f"class_id: {class_id}"
-        )
+        print(f"class_id: {class_id}")
 
 
         response = requests.post(
@@ -657,12 +690,6 @@ def send_result(class_id):
 
 
         response.raise_for_status()
-
-
-        print(
-            "✅ 結果送信完了"
-        )
-
 
         return True
 
@@ -715,6 +742,7 @@ def process_prediction(result):
     global inference_confirmed
     global last_prediction_id
     global same_prediction_count
+    global next_action_time
 
 
     (
@@ -732,9 +760,7 @@ def process_prediction(result):
 
     if class_id is None:
 
-        print(
-            "⚠️ class_idを取得できませんでした"
-        )
+        print("⚠️ class_idを取得できませんでした")
 
         return False
 
@@ -747,25 +773,15 @@ def process_prediction(result):
         "================================"
     )
 
-    print(
-        "🎮 推定結果"
-    )
+    print("🎮 推定結果")
 
-    print(
-        f"id: {class_id}"
-    )
+    print(f"id: {class_id}")
 
-    print(
-        f"信頼度: {confidence}"
-    )
+    print(f"信頼度: {confidence}")
 
-    print(
-        f"根拠: {reason}"
-    )
+    print(f"根拠: {reason}")
 
-    print(
-        "================================"
-    )
+    print("================================")
 
 
     # ==================================
@@ -790,63 +806,38 @@ def process_prediction(result):
     # ==================================
 
     if class_id == 0:
-
-        print(
-            "⚪ id=0"
-        )
-
-        print(
-            "🔍 推論を継続します"
-        )
-
-
-        send_result(0)
-
-
-        last_prediction_id = None
-
-        same_prediction_count = 0
-
-
-        inference_active = True
-
-        inference_confirmed = False
-
-
-        return True
-
-
+        if send_result(0):
+            last_prediction_id = None
+            same_prediction_count = 0
+            inference_active = True
+            inference_confirmed = False
+            return True
+        else:
+            print("❌ id=0送信失敗")
+            return False
     # ==================================
     # 初回のゲームID
     # ==================================
 
     if last_prediction_id is None:
 
-        last_prediction_id = class_id
 
-        same_prediction_count = 1
-
-
-        print(
-            f"🎮 初回推定: id={class_id}"
-        )
-
+        print(f"🎮 初回推定: id={class_id}")
 
         # 初回結果は即送信
-        send_result(
-            class_id
-        )
+        if send_result(class_id):
 
+            last_prediction_id = class_id
+            same_prediction_count = 1
 
-        inference_active = True
+            inference_active = True
 
+            return True
 
-        print(
-            "🔍 もう一度同じIDが出るか確認します"
-        )
+        else:
 
-
-        return True
+            print("❌ 結果送信失敗")
+            return False
 
 
     # ==================================
@@ -858,11 +849,6 @@ def process_prediction(result):
         same_prediction_count += 1
 
 
-        print(
-            f"🎯 同じIDが連続 "
-            f"{same_prediction_count}回"
-        )
-
 
         # ==================================
         # 2回連続
@@ -870,20 +856,10 @@ def process_prediction(result):
 
         if same_prediction_count >= 2:
 
-            print(
-                f"🎯 id={class_id} を確定しました"
-            )
-
-
-            print(
-                "🛑 Gemini推論を停止します"
-            )
-
-
             inference_confirmed = True
-
             inference_active = False
 
+            next_action_time = time.time() + CONFIRMED_INTERVAL
 
             return True
 
@@ -897,34 +873,21 @@ def process_prediction(result):
     # 違うID
     # ==================================
 
-    print(
-        f"🔄 ID変更: "
-        f"{last_prediction_id} → {class_id}"
-    )
-
-
-    last_prediction_id = class_id
-
-    same_prediction_count = 1
-
 
     # 違うIDも即送信
-    send_result(
-        class_id
-    )
+    if send_result(class_id):
 
+        last_prediction_id = class_id
+        same_prediction_count = 1
 
-    print(
-        "🔍 新しいIDについて再確認します"
-    )
+        inference_active = True
 
+        return True
+    
+    else:
 
-    inference_active = True
-
-    inference_confirmed = False
-
-
-    return True
+        print("❌ 結果送信失敗")
+        return False
 
 
 # ======================================
@@ -935,17 +898,10 @@ def set_next_normal_action():
 
     global next_action_time
 
-
     next_action_time = (
         time.time()
         + NORMAL_INTERVAL
     )
-
-
-    print(
-        "⏱️ 次回確認: 2分後"
-    )
-
 
 def set_next_error_action():
 
@@ -955,11 +911,6 @@ def set_next_error_action():
     next_action_time = (
         time.time()
         + ERROR_INTERVAL
-    )
-
-
-    print(
-        "⏱️ 次回確認: 5分後"
     )
 
 
@@ -1054,15 +1005,42 @@ try:
 
 
         # ==================================
-        # 次回処理時刻
+        # 30分経過したら再推論
         # ==================================
 
-        if time.time() < next_action_time:
+        if inference_confirmed and time.time() >= next_action_time:
 
-            time.sleep(
-                0.01
+            inference_confirmed = False
+            inference_active = True
+
+            last_prediction_id = None
+            same_prediction_count = 0
+        
+        # ==================================
+        # 次回処理時刻
+        # ==================================
+        if time.time() < next_action_time:
+        # Switch状態だけ取得
+            response = requests.get(
+                SWITCH_API_URL,
+                timeout=5
             )
 
+            packet = response.json()["packet"]
+        # 電源OFFなら即送信
+            if not packet and last_packet:
+
+
+                send_result(0)
+
+                reset_prediction_state()
+
+                last_packet = False
+
+            else:
+                last_packet = packet
+
+            time.sleep(5)
             continue
 
 
@@ -1104,16 +1082,6 @@ try:
 
                 if not last_packet:
 
-                    print(
-                        "🎮 Switch起動検知"
-                    )
-
-
-                    print(
-                        "🔍 新しいゲームの推定を開始します"
-                    )
-
-
                     reset_prediction_state()
 
 
@@ -1125,11 +1093,6 @@ try:
                 # ----------------------------------
 
                 if inference_active:
-
-                    print(
-                        "🤖 推論実行"
-                    )
-
 
                     # Geminiを別スレッドで開始
 
@@ -1152,30 +1115,16 @@ try:
 
                 elif inference_confirmed:
 
-                    print(
-                        "🎯 ゲーム確定済み"
-                    )
-
-
-                    print(
-                        "🛑 Gemini推論は停止中"
-                    )
-
 
                     print(
                         "🔍 Switch状態のみ監視"
                     )
-
-
-                    set_next_normal_action()
-
 
                 else:
 
                     print(
                         "🎮 Switch起動中"
                     )
-
 
                     set_next_normal_action()
 
@@ -1185,15 +1134,6 @@ try:
             # ==================================
 
             else:
-
-                print(
-                    "💤 Switch停止中"
-                )
-
-
-                # ----------------------------------
-                # ON → OFF
-                # ----------------------------------
 
                 if last_packet:
 
@@ -1235,25 +1175,16 @@ try:
 
             print(e)
 
-
             set_next_error_action()
-
 
         # ==================================
         # その他エラー
         # ==================================
 
         except Exception as e:
-
-            print(
-                "❌ エラー"
-            )
-
+            print("❌ エラー")
             print(e)
-
-
             set_next_error_action()
-
 
 except KeyboardInterrupt:
 
