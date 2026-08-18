@@ -136,6 +136,14 @@ print(
 
 
 # ======================================
+# Prompt作成
+# ======================================
+
+PROMPT = create_prompt()
+
+print("✅ Promptを作成しました")
+
+# ======================================
 # ログ設定
 # ======================================
 
@@ -433,13 +441,11 @@ def recognize_boardgame(frame):
         )
 
         # 推論直前にAPIから最新のゲーム候補を取得して
-        # prompt.txtの候補欄を更新する
-        prompt = create_prompt()
         response = client.models.generate_content(
             model="gemini-flash-latest",
             contents=[
                 image,
-                prompt
+                PROMPT
             ]
         )
 
