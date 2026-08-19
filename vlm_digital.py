@@ -485,6 +485,7 @@ def start_gemini_inference(frame):
 
 
     gemini_running = True
+    print("🔍 ゲーム推定開始")
 
 
     def worker():
