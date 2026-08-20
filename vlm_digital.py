@@ -1089,12 +1089,6 @@ try:
 
                 reset_prediction_state()
 
-            else:
-
-                print(
-                    "⚪ Switch停止中"
-                )
-
             last_packet = False
 
             time.sleep(
