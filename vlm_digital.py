@@ -145,6 +145,14 @@ def create_prompt():
 
 print("✅ prompt.txt を読み込みました")
 
+# ======================================
+# Promptを起動時に1回だけ作成
+# ======================================
+
+PROMPT = create_prompt()
+
+print("✅ ゲーム候補を取得しました")
+print("✅ Promptを作成しました")
 
 # ======================================
 # ログ設定
@@ -504,9 +512,6 @@ def recognize_boardgame(frame):
 
     try:
 
-        # 推論直前に最新のゲーム候補を取得
-        prompt = create_prompt()
-
         image = Image.fromarray(
             cv2.cvtColor(
                 frame,
@@ -518,7 +523,7 @@ def recognize_boardgame(frame):
             model="gemini-flash-latest",
             contents=[
                 image,
-                prompt
+                PROMPT
             ]
         )
 
