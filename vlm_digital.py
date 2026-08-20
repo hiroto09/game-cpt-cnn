@@ -246,10 +246,10 @@ def write_prediction_log(
 NORMAL_INTERVAL = 180
 
 # ゲーム確定後：30分
-CONFIRMED_INTERVAL = 1800
+CONFIRMED_INTERVAL = 3600
 
-# エラー時：5分
-ERROR_INTERVAL = 300
+# エラー時：10分
+ERROR_INTERVAL = 600
 
 # Switch状態確認間隔
 SWITCH_CHECK_INTERVAL = 5
@@ -503,8 +503,6 @@ def recognize_boardgame(frame):
         gemini_error = False
 
     try:
-
-        print("🤖 Gemini API送信開始")
 
         # 推論直前に最新のゲーム候補を取得
         prompt = create_prompt()
@@ -1099,14 +1097,6 @@ try:
             )
 
             continue
-
-        # ==================================
-        # Switch ON
-        # ==================================
-
-        print(
-            "🟢 Switch起動中"
-        )
 
         # ==================================
         # OFF → ON
