@@ -174,7 +174,7 @@ class GameRecognizerApp:
         try:
             image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             response = self.client.models.generate_content(
-                model="gemini-1.5-flash",
+                model="gemini-flash-latest",
                 contents=[image, self.prompt]
             )
             print("🤖 Gemini API応答受信")
