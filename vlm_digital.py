@@ -21,7 +21,7 @@ NORMAL_INTERVAL = 180         # 通常時：3分
 CONFIRMED_INTERVAL = 3600     # ゲーム確定後：60分
 ERROR_INTERVAL = 600          # 500エラー等：10分ストップ
 RATE_LIMIT_INTERVAL = 3600    # 429エラー(Too Many Requests)時：1時間ストップ
-SWITCH_CHECK_INTERVAL = 5     # Switch状態確認間隔：5秒
+SWITCH_CHECK_INTERVAL = 60     # Switch状態確認間隔：60秒
 
 
 class GameRecognizerApp:
