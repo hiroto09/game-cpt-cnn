@@ -235,13 +235,11 @@ class GameRecognizerApp:
                 # 503エラーなら次のモデルで再試行
                 if code == 503:
                     print(f"🔄 503エラーを検知しました。別のモデルで再試行します...")
-                    time.sleep(2)  # サーバーへの連続アクセスを避けるための微小ウェイト
+                    time.sleep(2)
                     continue
                 else:
-                    # 503以外（429など）はフォールバックせずにループを抜ける
                     break
 
-        # 全てのモデルで失敗したか、フォールバック対象外のエラーで抜けた場合
         print("❌ すべてのモデルで推論に失敗したか、回復不能なエラーが発生しました。")
         with self.gemini_lock:
             self.gemini_error_code = final_error_code
@@ -351,7 +349,8 @@ class GameRecognizerApp:
         if class_id == 0:
             success, code = self._send_result(0, frame)
             if success:
-                self.last_prediction_id = None
+                # ID=0の場合は連続検出されてもカウント・確定をせず、常に通常間隔で監視を継続する
+                self.last_prediction_id = 0
                 self.same_prediction_count = 0
                 self.inference_active = False
                 self.inference_confirmed = False
@@ -359,10 +358,10 @@ class GameRecognizerApp:
                 return "SUCCESS"
             return "ERROR_429" if code == 429 else "ERROR_500"
 
-        # 初回推定 または ID変更
+        # 初回推定 または ID変更 (0 -> ゲームID を含む)
         if self.last_prediction_id != class_id:
-            if self.last_prediction_id is None:
-                print(f"🎮 初回推定: id={class_id}")
+            if self.last_prediction_id is None or self.last_prediction_id == 0:
+                print(f"🎮 初回推定/再開始: id={class_id}")
             else:
                 print(f"🔄 ID変更: {self.last_prediction_id} → {class_id}")
             
@@ -375,7 +374,7 @@ class GameRecognizerApp:
                 return "SUCCESS"
             return "ERROR_429" if code == 429 else "ERROR_500"
 
-        # 同じIDが連続した場合
+        # 同じゲームID（1以上）が連続した場合
         self.same_prediction_count += 1
         print(f"🔁 同じID: {self.same_prediction_count}回連続")
 
