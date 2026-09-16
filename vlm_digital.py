@@ -21,8 +21,14 @@ NORMAL_INTERVAL = 180         # 通常時：3分
 CONFIRMED_INTERVAL = 3600     # ゲーム確定後：60分
 ERROR_INTERVAL = 600          # 500エラー等：10分ストップ
 RATE_LIMIT_INTERVAL = 3600    # 429エラー(Too Many Requests)時：1時間ストップ
-SWITCH_CHECK_INTERVAL = 60     # Switch状態確認間隔：60秒
+SWITCH_CHECK_INTERVAL = 60    # Switch状態確認間隔：60秒
 
+# フォールバック用のモデルリスト（上から順に試行します）
+FALLBACK_MODELS = [
+    "gemini-flash-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+]
 
 class GameRecognizerApp:
     def __init__(self):
@@ -181,42 +187,65 @@ class GameRecognizerApp:
             print(f"⚠️ ログ保存エラー: {e}")
 
     # ======================================
-    # Gemini 推論処理
+    # Gemini 推論処理 (フォールバック対応)
     # ======================================
     def _recognize_boardgame_task(self, frame):
         """別スレッドで実行されるGemini推論の実体"""
-        try:
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            response = self.client.models.generate_content(
-                model="gemini-flash-latest",
-                contents=[image, self.prompt]
-            )
-            print("🤖 Gemini API応答受信")
-            
-            with self.gemini_lock:
-                if not response.text:
-                    print("⚠️ Geminiから回答がありません")
-                    self.gemini_error_code = 500
-                else:
-                    self.gemini_result = response.text
-                    self.gemini_frame = frame
-        except Exception as e:
-            error_str = str(e)
-            print(f"❌ Geminiエラー: {error_str}")
-            
-            code = 500
-            if "429" in error_str:
-                code = 429
-            elif hasattr(e, "code"):
-                code = e.code
-            elif hasattr(e, "status_code"):
-                code = e.status_code
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        final_error_code = 500
 
-            with self.gemini_lock:
-                self.gemini_error_code = code
-        finally:
-            with self.gemini_lock:
-                self.gemini_running = False
+        for model_name in FALLBACK_MODELS:
+            try:
+                print(f"🤖 Gemini 推論中 (モデル: {model_name})...")
+                response = self.client.models.generate_content(
+                    model=model_name,
+                    contents=[image, self.prompt]
+                )
+                print(f"✅ Gemini API応答受信 (モデル: {model_name})")
+                
+                with self.gemini_lock:
+                    if not response.text:
+                        print(f"⚠️ {model_name} から回答がありません")
+                        self.gemini_error_code = 500
+                    else:
+                        self.gemini_result = response.text
+                        self.gemini_frame = frame
+                    self.gemini_running = False
+                
+                # 成功した場合はメソッドを終了（次のモデルは試さない）
+                return
+
+            except Exception as e:
+                error_str = str(e)
+                code = 500
+                
+                # エラーコードの特定
+                if "429" in error_str:
+                    code = 429
+                elif "503" in error_str:
+                    code = 503
+                elif hasattr(e, "code"):
+                    code = e.code
+                elif hasattr(e, "status_code"):
+                    code = e.status_code
+
+                print(f"❌ Geminiエラー ({model_name}): {error_str} (Code: {code})")
+                final_error_code = code
+
+                # 503エラーなら次のモデルで再試行
+                if code == 503:
+                    print(f"🔄 503エラーを検知しました。別のモデルで再試行します...")
+                    time.sleep(2)  # サーバーへの連続アクセスを避けるための微小ウェイト
+                    continue
+                else:
+                    # 503以外（429など）はフォールバックせずにループを抜ける
+                    break
+
+        # 全てのモデルで失敗したか、フォールバック対象外のエラーで抜けた場合
+        print("❌ すべてのモデルで推論に失敗したか、回復不能なエラーが発生しました。")
+        with self.gemini_lock:
+            self.gemini_error_code = final_error_code
+            self.gemini_running = False
 
     def start_gemini_inference(self, frame):
         """推論スレッドの開始"""
