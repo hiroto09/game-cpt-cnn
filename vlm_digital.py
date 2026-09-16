@@ -53,6 +53,7 @@ class GameRecognizerApp:
         # Geminiスレッド用
         self.gemini_running = False
         self.gemini_result = None
+        self.gemini_frame = None       # 推論に使用した画像フレーム
         self.gemini_error_code = None  # エラー発生時のステータスコードを保持
         self.gemini_lock = threading.Lock()
 
@@ -140,11 +141,24 @@ class GameRecognizerApp:
             print(f"❌ Switch状態取得エラー: {e}")
             return None, 500
 
-    def _send_result(self, class_id):
-        """推定結果をAPIに送信し (Success(bool), status_code) を返す"""
+    def _send_result(self, class_id, frame=None):
+        """推定結果と画像をAPIに送信し (Success(bool), status_code) を返す"""
         try:
             print(f"\n📤 結果送信 (class_id: {class_id})")
-            response = requests.post(self.RESULT_API_URL, json={"class_id": class_id}, timeout=10)
+            
+            data = {"class_id": str(class_id)}
+            files = None
+
+            # 画像フレームがある場合はエンコードして送信データに追加
+            if frame is not None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{class_id}_{timestamp}.jpg"
+                _, img_encoded = cv2.imencode(".jpg", frame)
+                files = {
+                    "image": (filename, img_encoded.tobytes(), "image/jpeg")
+                }
+
+            response = requests.post(self.RESULT_API_URL, data=data, files=files, timeout=15)
             print(f"HTTP Status: {response.status_code}, Response: {response.text}")
             response.raise_for_status()
             return True, response.status_code
@@ -182,14 +196,14 @@ class GameRecognizerApp:
             with self.gemini_lock:
                 if not response.text:
                     print("⚠️ Geminiから回答がありません")
-                    self.gemini_error_code = 500  # レスポンス空は500相当扱い
+                    self.gemini_error_code = 500
                 else:
                     self.gemini_result = response.text
+                    self.gemini_frame = frame
         except Exception as e:
             error_str = str(e)
             print(f"❌ Geminiエラー: {error_str}")
             
-            # エラー文字列やプロパティからステータスコードを抽出
             code = 500
             if "429" in error_str:
                 code = 429
@@ -211,6 +225,7 @@ class GameRecognizerApp:
                 return False
             self.gemini_running = True
             self.gemini_result = None
+            self.gemini_frame = None
             self.gemini_error_code = None
 
         print("\n🔍 ゲーム推定開始...")
@@ -218,19 +233,21 @@ class GameRecognizerApp:
         return True
 
     def get_gemini_result_if_done(self):
-        """推論が完了していれば結果を返す (result, error_code)"""
+        """推論が完了していれば結果と画像フレームを返す (result, error_code, frame)"""
         with self.gemini_lock:
             if self.gemini_running:
-                return None, None
+                return None, None, None
             if self.gemini_error_code is not None:
                 err_code = self.gemini_error_code
                 self.gemini_error_code = None
-                return None, err_code
+                return None, err_code, None
             if self.gemini_result is not None:
                 res = self.gemini_result
+                frame = self.gemini_frame
                 self.gemini_result = None
-                return res, None
-        return None, None
+                self.gemini_frame = None
+                return res, None, frame
+        return None, None, None
 
     def parse_gemini_result(self, result):
         """JSONまたはテキストから結果を抽出"""
@@ -285,7 +302,7 @@ class GameRecognizerApp:
     def schedule_next(self, interval):
         self.next_action_time = time.time() + interval
 
-    def process_prediction(self, result):
+    def process_prediction(self, result, frame=None):
         """
         処理結果のステータスを文字列で返す
         "SUCCESS", "ERROR_429", "ERROR_500"
@@ -303,7 +320,7 @@ class GameRecognizerApp:
 
         # ID=0 (ゲームをしていない/メニュー画面など)
         if class_id == 0:
-            success, code = self._send_result(0)
+            success, code = self._send_result(0, frame)
             if success:
                 self.last_prediction_id = None
                 self.same_prediction_count = 0
@@ -320,7 +337,7 @@ class GameRecognizerApp:
             else:
                 print(f"🔄 ID変更: {self.last_prediction_id} → {class_id}")
             
-            success, code = self._send_result(class_id)
+            success, code = self._send_result(class_id, frame)
             if success:
                 self.last_prediction_id = class_id
                 self.same_prediction_count = 1
@@ -343,7 +360,6 @@ class GameRecognizerApp:
             self.schedule_next(NORMAL_INTERVAL)
         return "SUCCESS"
 
-
     def run(self):
         """メインループ"""
         try:
@@ -360,11 +376,11 @@ class GameRecognizerApp:
                     continue
 
                 # 3. Gemini推論結果の処理
-                result, error_code = self.get_gemini_result_if_done()
+                result, error_code, infer_frame = self.get_gemini_result_if_done()
                 
                 # Gemini推論の成功時 (API送信の成否も含む)
                 if result:
-                    status = self.process_prediction(result)
+                    status = self.process_prediction(result, infer_frame)
                     if status == "ERROR_429":
                         print("⚠️ 429エラー(利用制限)を検知。1時間ストップします。")
                         self.schedule_next(RATE_LIMIT_INTERVAL)
