@@ -23,7 +23,7 @@ ERROR_INTERVAL = 600          # 500エラー等：10分ストップ
 RATE_LIMIT_INTERVAL = 3600    # 429エラー(Too Many Requests)時：1時間ストップ
 SWITCH_CHECK_INTERVAL = 60    # Switch状態確認間隔：60秒
 
-# フォールバック用のモデルリスト（上から順に試行します）
+# フォールバック用のモデルリスト
 FALLBACK_MODELS = [
     "gemini-flash-latest",
     "gemini-3.5-flash-lite",
@@ -55,6 +55,7 @@ class GameRecognizerApp:
         self.last_prediction_id = None
         self.same_prediction_count = 0
         self.next_action_time = 0
+        self.last_switch_check_time = 0  # Switch状態確認用のタイマー
 
         # Geminiスレッド用
         self.gemini_running = False
@@ -155,7 +156,6 @@ class GameRecognizerApp:
             data = {"class_id": str(class_id)}
             files = None
 
-            # 画像フレームがある場合はエンコードして送信データに追加
             if frame is not None:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{class_id}_{timestamp}.jpg"
@@ -187,7 +187,7 @@ class GameRecognizerApp:
             print(f"⚠️ ログ保存エラー: {e}")
 
     # ======================================
-    # Gemini 推論処理 (フォールバック対応)
+    # Gemini 推論処理
     # ======================================
     def _recognize_boardgame_task(self, frame):
         """別スレッドで実行されるGemini推論の実体"""
@@ -211,15 +211,12 @@ class GameRecognizerApp:
                         self.gemini_result = response.text
                         self.gemini_frame = frame
                     self.gemini_running = False
-                
-                # 成功した場合はメソッドを終了（次のモデルは試さない）
                 return
 
             except Exception as e:
                 error_str = str(e)
                 code = 500
                 
-                # エラーコードの特定
                 if "429" in error_str:
                     code = 429
                 elif "503" in error_str:
@@ -232,7 +229,6 @@ class GameRecognizerApp:
                 print(f"❌ Geminiエラー ({model_name}): {error_str} (Code: {code})")
                 final_error_code = code
 
-                # 503エラーなら次のモデルで再試行
                 if code == 503:
                     print(f"🔄 503エラーを検知しました。別のモデルで再試行します...")
                     time.sleep(2)
@@ -330,10 +326,7 @@ class GameRecognizerApp:
         self.next_action_time = time.time() + interval
 
     def process_prediction(self, result, frame=None):
-        """
-        処理結果のステータスを文字列で返す
-        "SUCCESS", "ERROR_429", "ERROR_500"
-        """
+        """処理結果のステータスを文字列で返す"""
         class_id, confidence, reason = self.parse_gemini_result(result)
 
         if class_id is None:
@@ -349,16 +342,15 @@ class GameRecognizerApp:
         if class_id == 0:
             success, code = self._send_result(0, frame)
             if success:
-                # ID=0の場合は連続検出されてもカウント・確定をせず、常に通常間隔で監視を継続する
                 self.last_prediction_id = 0
                 self.same_prediction_count = 0
-                self.inference_active = False
+                self.inference_active = True  # SwitchがONの間はTrueを保持
                 self.inference_confirmed = False
                 self.schedule_next(NORMAL_INTERVAL)
                 return "SUCCESS"
             return "ERROR_429" if code == 429 else "ERROR_500"
 
-        # 初回推定 または ID変更 (0 -> ゲームID を含む)
+        # 初回推定 または ID変更
         if self.last_prediction_id != class_id:
             if self.last_prediction_id is None or self.last_prediction_id == 0:
                 print(f"🎮 初回推定/再開始: id={class_id}")
@@ -369,7 +361,7 @@ class GameRecognizerApp:
             if success:
                 self.last_prediction_id = class_id
                 self.same_prediction_count = 1
-                self.inference_active = False
+                self.inference_active = True  # SwitchがONの間はTrueを保持
                 self.schedule_next(NORMAL_INTERVAL)
                 return "SUCCESS"
             return "ERROR_429" if code == 429 else "ERROR_500"
@@ -381,10 +373,8 @@ class GameRecognizerApp:
         if self.same_prediction_count >= 2:
             print("✅ ゲームを確定しました！ ⏰ 以降は長時間待機モードになります")
             self.inference_confirmed = True
-            self.inference_active = False
             self.schedule_next(CONFIRMED_INTERVAL)
         else:
-            self.inference_active = False
             self.schedule_next(NORMAL_INTERVAL)
         return "SUCCESS"
 
@@ -392,21 +382,21 @@ class GameRecognizerApp:
         """メインループ"""
         try:
             while True:
-                # 1. プレビュー表示
+                now = time.time()
+
+                # 1. プレビュー表示 (常にスムーズに更新)
                 frame = self._capture_image()
                 cv2.imshow("Preview", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-                # 2. Gemini推論中ならスキップして描画だけ回す
+                # 2. Gemini推論中ならスキップ
                 if self.gemini_running:
                     time.sleep(0.01)
                     continue
 
                 # 3. Gemini推論結果の処理
                 result, error_code, infer_frame = self.get_gemini_result_if_done()
-                
-                # Gemini推論の成功時 (API送信の成否も含む)
                 if result:
                     status = self.process_prediction(result, infer_frame)
                     if status == "ERROR_429":
@@ -416,8 +406,6 @@ class GameRecognizerApp:
                         print("⚠️ 500エラー(サーバーエラー)を検知。10分ストップします。")
                         self.schedule_next(ERROR_INTERVAL)
                     continue
-                
-                # Gemini推論自体がエラーの場合
                 elif error_code is not None:
                     if error_code == 429:
                         print("⚠️ Gemini 429エラー(高負荷/利用制限)。1時間ストップします。")
@@ -427,46 +415,38 @@ class GameRecognizerApp:
                         self.schedule_next(ERROR_INTERVAL)
                     continue
 
-                # 4. Switch電源状態のチェック
-                packet, sw_code = self._get_switch_state()
-                if packet is None:
-                    if sw_code == 429:
-                        print("⚠️ Switch API 429エラー。1時間ストップします。")
-                        self.schedule_next(RATE_LIMIT_INTERVAL)
+                # 4. Switch電源状態のチェック (指定間隔ごとに実行)
+                if now - self.last_switch_check_time >= SWITCH_CHECK_INTERVAL:
+                    self.last_switch_check_time = now
+                    packet, sw_code = self._get_switch_state()
+                    
+                    if packet is None:
+                        if sw_code == 429:
+                            print("⚠️ Switch API 429エラー。1時間ストップします。")
+                            self.schedule_next(RATE_LIMIT_INTERVAL)
+                        else:
+                            print("⚠️ Switch API エラー。10分ストップします。")
+                            self.schedule_next(ERROR_INTERVAL)
                     else:
-                        print("⚠️ Switch API エラー。10分ストップします。")
-                        self.schedule_next(ERROR_INTERVAL)
-                    time.sleep(SWITCH_CHECK_INTERVAL)
-                    continue
+                        # Switch: ON -> OFF
+                        if not packet and self.last_packet:
+                            print("🔌 Switch電源OFFを検知 ⚪ id=0を送信します")
+                            success, code = self._send_result(0)
+                            if not success and code == 429:
+                                self.schedule_next(RATE_LIMIT_INTERVAL)
+                            self.reset_prediction_state()
+                            self.last_packet = False
 
-                # Switch: ON -> OFF
-                if not packet and self.last_packet:
-                    print("🔌 Switch電源OFFを検知 ⚪ id=0を送信します")
-                    success, code = self._send_result(0)
-                    if not success and code == 429:
-                        self.schedule_next(RATE_LIMIT_INTERVAL)
-                    self.reset_prediction_state()
-                    self.last_packet = False
-                    time.sleep(SWITCH_CHECK_INTERVAL)
-                    continue
-
-                # Switch: OFF状態継続
-                if not packet:
-                    self.last_packet = False
-                    time.sleep(SWITCH_CHECK_INTERVAL)
-                    continue
-
-                # Switch: OFF -> ON
-                if not self.last_packet and packet:
-                    print("🔄 Switch電源 ON を検知")
-                    self.reset_prediction_state()
-                    self.inference_active = True
-
-                self.last_packet = packet
+                        # Switch: OFF -> ON
+                        elif not self.last_packet and packet:
+                            print("🔄 Switch電源 ON を検知")
+                            self.reset_prediction_state()
+                            self.inference_active = True
+                            self.last_packet = packet
+                        else:
+                            self.last_packet = packet
 
                 # 5. 推論スケジュールの管理
-                now = time.time()
-                
                 if self.inference_confirmed:
                     # 確定済みの長時間待機
                     if now >= self.next_action_time:
@@ -477,13 +457,12 @@ class GameRecognizerApp:
                         self.same_prediction_count = 0
                 
                 elif self.inference_active:
-                    # 通常推論ターン
+                    # 通常推論ターン (次回の予定時刻を超えていれば推論開始)
                     if now >= self.next_action_time:
-                        if not self.start_gemini_inference(frame.copy()):
-                            print("⚠️ Gemini推論を開始できません")
+                        self.start_gemini_inference(frame.copy())
 
-                # ループウェイト（API叩きすぎ防止）
-                time.sleep(SWITCH_CHECK_INTERVAL)
+                # メインループの短時間スリープ (GUI応答性維持のため)
+                time.sleep(0.03)
 
         except KeyboardInterrupt:
             print("\n終了します")
