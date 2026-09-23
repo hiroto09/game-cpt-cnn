@@ -15,6 +15,7 @@ from google import genai
 PROMPT_FILE = "prompt.txt"
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "game_prediction.log")
+ERROR_LOG_FILE = os.path.join(LOG_DIR, "gemini_errors.log")
 
 # インターバル設定（秒）
 NORMAL_INTERVAL = 180         # 通常時：3分
@@ -29,6 +30,28 @@ FALLBACK_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
 ]
+
+# ======================================
+# エラーログ書き込み関数
+# ======================================
+def write_error_log(error_type, target_or_model, detail=""):
+    """
+    429 / 503 等のエラー発生時に日時・エラー種別・対象モデル等をログファイルへ追記
+    出力例: [2026-09-23 19:15:00] ERROR: 429 (Rate Limit) | TARGET/MODEL: gemini-flash-latest | DETAIL: ...
+    """
+    os.makedirs(LOG_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] ERROR: {error_type} | TARGET/MODEL: {target_or_model}"
+    if detail:
+        log_line += f" | DETAIL: {detail}"
+    log_line += "\n"
+
+    try:
+        with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception as e:
+        print("❌ エラーログ保存失敗:", e)
+
 
 class GameRecognizerApp:
     def __init__(self):
@@ -78,12 +101,18 @@ class GameRecognizerApp:
         """APIからdigitalゲーム一覧を取得して文字列として返す"""
         try:
             response = requests.get(self.EVENTS_API_URL, params={"game_type": "digital"}, timeout=10)
+            if response.status_code in [429, 503]:
+                write_error_log(f"{response.status_code} HTTP Error", "EVENTS_API_URL", response.text[:100])
             response.raise_for_status()
             games = response.json()["data"]
 
             print("🎮 digitalゲーム候補をAPIから取得しました")
             return "\n".join(f'    "{game["ID"]}" : "{game["Name"]}"' for game in games)
         except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "503" in err_str:
+                err_type = "429 Rate Limit" if "429" in err_str else "503 Service Unavailable"
+                write_error_log(err_type, "EVENTS_API_URL", err_str[:100])
             print(f"❌ digitalゲーム候補の取得に失敗しました: {e}")
             return None
 
@@ -135,6 +164,8 @@ class GameRecognizerApp:
         """SwitchのON/OFF状態をAPIから取得 (packet, status_code)"""
         try:
             response = requests.get(self.SWITCH_API_URL, timeout=5)
+            if response.status_code in [429, 503]:
+                write_error_log(f"{response.status_code} HTTP Error", "SWITCH_API_URL", response.text[:100])
             response.raise_for_status()
             data = response.json()
             if "packet" not in data:
@@ -142,6 +173,10 @@ class GameRecognizerApp:
             return bool(data["packet"]), 200
         except requests.RequestException as e:
             code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 500
+            err_str = str(e)
+            if code in [429, 503] or "429" in err_str or "503" in err_str:
+                err_type = "429 Rate Limit" if (code == 429 or "429" in err_str) else "503 Service Unavailable"
+                write_error_log(err_type, "SWITCH_API_URL", err_str[:100])
             print(f"❌ Switch状態取得エラー: {e}")
             return None, code
         except Exception as e:
@@ -165,12 +200,19 @@ class GameRecognizerApp:
                 }
 
             response = requests.post(self.RESULT_API_URL, data=data, files=files, timeout=15)
+            if response.status_code in [429, 503]:
+                write_error_log(f"{response.status_code} HTTP Error", "RESULT_API_URL", response.text[:100])
+
             print(f"HTTP Status: {response.status_code}, Response: {response.text}")
             response.raise_for_status()
             return True, response.status_code
         except requests.RequestException as e:
             print(f"❌ 結果送信エラー: {e}")
             code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 500
+            err_str = str(e)
+            if code in [429, 503] or "429" in err_str or "503" in err_str:
+                err_type = "429 Rate Limit" if (code == 429 or "429" in err_str) else "503 Service Unavailable"
+                write_error_log(err_type, "RESULT_API_URL", err_str[:100])
             return False, code
 
     def _log_prediction(self, result, class_id, confidence, reason):
@@ -207,6 +249,7 @@ class GameRecognizerApp:
                     if not response.text:
                         print(f"⚠️ {model_name} から回答がありません")
                         self.gemini_error_code = 500
+                        write_error_log("Empty Response", model_name, "Gemini text response was empty")
                     else:
                         self.gemini_result = response.text
                         self.gemini_frame = frame
@@ -219,12 +262,14 @@ class GameRecognizerApp:
                 
                 if "429" in error_str:
                     code = 429
+                    write_error_log("429 (Rate Limit Exceeded)", model_name, error_str[:100])
                 elif "503" in error_str:
                     code = 503
-                elif hasattr(e, "code"):
-                    code = e.code
-                elif hasattr(e, "status_code"):
-                    code = e.status_code
+                    write_error_log("503 (Service Unavailable)", model_name, error_str[:100])
+                else:
+                    if hasattr(e, "code"): code = e.code
+                    elif hasattr(e, "status_code"): code = e.status_code
+                    write_error_log(f"Gemini Error ({code})", model_name, error_str[:100])
 
                 print(f"❌ Geminiエラー ({model_name}): {error_str} (Code: {code})")
                 final_error_code = code
