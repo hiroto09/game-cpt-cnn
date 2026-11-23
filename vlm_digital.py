@@ -31,6 +31,7 @@ FALLBACK_MODELS = [
     "gemini-3.5-flash",
 ]
 
+
 # ======================================
 # エラーログ書き込み関数
 # ======================================
@@ -60,13 +61,17 @@ class GameRecognizerApp:
         self.SWITCH_API_URL = self._get_env("SWITCH_API_URL")
         self.RESULT_API_URL = self._get_env("RESULT_API_URL")
         self.EVENTS_API_URL = self._get_env("EVENTS_API_URL")
+        self.STAYWATCH_API_USERS = self._get_env("STAYWATCH_API_USERS")
+        self.STAYWATCH_API_KEY = self._get_env("STAYWATCH_API_KEY")
         self.GEMINI_API_KEY = self._get_env("GEMINI_API_KEY")
 
         # 2. 初期化
         self.client = genai.Client(api_key=self.GEMINI_API_KEY)
+        self.game_candidates_text = None
+        self.member_candidates_text = None
         self.prompt = self._create_prompt()
         self.capture = self._open_camera()
-        
+
         os.makedirs(LOG_DIR, exist_ok=True)
         cv2.namedWindow("Preview", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Preview", 960, 540)
@@ -76,6 +81,7 @@ class GameRecognizerApp:
         self.inference_active = False
         self.inference_confirmed = False
         self.last_prediction_id = None
+        self.last_member_id = None
         self.same_prediction_count = 0
         self.next_action_time = 0
         self.last_switch_check_time = 0  # Switch状態確認用のタイマー
@@ -95,7 +101,7 @@ class GameRecognizerApp:
         return val
 
     # ======================================
-    # 初期化関連
+    # 初期化・候補取得関連
     # ======================================
     def _get_game_candidates(self):
         """APIからdigitalゲーム一覧を取得して文字列として返す"""
@@ -116,20 +122,70 @@ class GameRecognizerApp:
             print(f"❌ digitalゲーム候補の取得に失敗しました: {e}")
             return None
 
+    def _get_member_candidates(self):
+        """
+        STAYWATCH_API_USERS から参加者一覧を取得し、
+        jq -r '.[] | [.id, .name] | @tsv' 相当の「id<TAB>name」形式文字列を返す
+        """
+        headers = {
+            "Authorization": f"Bearer {self.STAYWATCH_API_KEY}",
+            "X-API-Key": self.STAYWATCH_API_KEY,
+            "Accept": "application/json",
+        }
+        try:
+            response = requests.get(self.STAYWATCH_API_USERS, headers=headers, timeout=10)
+            if response.status_code in [429, 503]:
+                write_error_log(f"{response.status_code} HTTP Error", "STAYWATCH_API_USERS", response.text[:100])
+            response.raise_for_status()
+
+            payload = response.json()
+            if isinstance(payload, list):
+                users = payload
+            elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
+                users = payload["data"]
+            else:
+                raise ValueError("参加者APIレスポンスの形式が想定外です")
+
+            lines = []
+            for user in users:
+                if isinstance(user, dict) and "id" in user and "name" in user:
+                    lines.append(f"{user['id']}\t{user['name']}")
+
+            print(f"👥 参加者候補をAPIから取得しました（{len(lines)}名）")
+            return "\n".join(lines)
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "503" in err_str:
+                err_type = "429 Rate Limit" if "429" in err_str else "503 Service Unavailable"
+                write_error_log(err_type, "STAYWATCH_API_USERS", err_str[:100])
+            print(f"❌ 参加者候補の取得に失敗しました: {e}")
+            return None
+
     def _create_prompt(self):
-        """Promptを作成する"""
+        """prompt.txt を読み込み、ゲーム候補と参加者候補を埋め込む"""
         if not os.path.exists(PROMPT_FILE):
             raise FileNotFoundError(f"{PROMPT_FILE} が見つかりません")
 
         with open(PROMPT_FILE, "r", encoding="utf-8") as f:
             prompt_template = f.read()
 
-        candidates = self._get_game_candidates()
-        if candidates is None:
+        game_candidates = self._get_game_candidates()
+        if game_candidates is None:
             raise RuntimeError("digitalゲーム候補を取得できないため、Gemini推論を実行できません")
 
-        print("✅ prompt.txt を読み込み、Promptを作成しました")
-        return prompt_template.replace("{GAME_CANDIDATES}", candidates)
+        member_candidates = self._get_member_candidates()
+        if member_candidates is None:
+            raise RuntimeError("参加者候補を取得できないため、Gemini推論を実行できません")
+
+        self.game_candidates_text = game_candidates
+        self.member_candidates_text = member_candidates
+
+        print(f"✅ {PROMPT_FILE} を読み込み、Promptを作成しました")
+        return (
+            prompt_template
+            .replace("{GAME_CANDIDATES}", game_candidates)
+            .replace("{MEMBER}", member_candidates)
+        )
 
     def _open_camera(self):
         """カメラを開く"""
@@ -155,7 +211,7 @@ class GameRecognizerApp:
         time.sleep(2)
         self.capture = self._open_camera()
         ret, frame = self.capture.read()
-        
+
         if not ret:
             raise RuntimeError("❌ 画像取得失敗")
         return frame
@@ -183,12 +239,17 @@ class GameRecognizerApp:
             print(f"❌ Switch状態取得エラー: {e}")
             return None, 500
 
-    def _send_result(self, class_id, frame=None):
-        """推定結果と画像をAPIに送信し (Success(bool), status_code) を返す"""
+    def _send_result(self, class_id, member_id=None, frame=None):
+        """推定結果（ゲームID・参加者ID・ゲーム候補・参加者候補・画像）をAPIに送信"""
         try:
-            print(f"\n📤 結果送信 (class_id: {class_id})")
-            
-            data = {"class_id": str(class_id)}
+            print(f"\n📤 結果送信 (class_id: {class_id}, member_id: {member_id})")
+
+            data = {
+                "class_id": str(class_id),
+                "member_id": "" if member_id is None else str(member_id),
+                "game_candidates": self.game_candidates_text or "",
+                "member_candidates": self.member_candidates_text or "",
+            }
             files = None
 
             if frame is not None:
@@ -215,13 +276,19 @@ class GameRecognizerApp:
                 write_error_log(err_type, "RESULT_API_URL", err_str[:100])
             return False, code
 
-    def _log_prediction(self, result, class_id, confidence, reason):
+    def _log_prediction(self, result, class_id, member_id, confidence, reason):
         """結果をログファイルに保存"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write("========================================\n")
-                f.write(f"日時: {timestamp}\nid: {class_id}\n信頼度: {confidence}\n根拠: {reason}\n")
+                f.write(
+                    f"日時: {timestamp}\n"
+                    f"id: {class_id}\n"
+                    f"member_id: {member_id}\n"
+                    f"信頼度: {confidence}\n"
+                    f"根拠: {reason}\n"
+                )
                 f.write(f"Gemini生回答:\n{result.strip() if result else 'Geminiから回答なし'}\n")
                 f.write("========================================\n\n")
             print(f"📝 ログ保存: {LOG_FILE}")
@@ -244,7 +311,7 @@ class GameRecognizerApp:
                     contents=[image, self.prompt]
                 )
                 print(f"✅ Gemini API応答受信 (モデル: {model_name})")
-                
+
                 with self.gemini_lock:
                     if not response.text:
                         print(f"⚠️ {model_name} から回答がありません")
@@ -259,7 +326,7 @@ class GameRecognizerApp:
             except Exception as e:
                 error_str = str(e)
                 code = 500
-                
+
                 if "429" in error_str:
                     code = 429
                     write_error_log("429 (Rate Limit Exceeded)", model_name, error_str[:100])
@@ -267,15 +334,17 @@ class GameRecognizerApp:
                     code = 503
                     write_error_log("503 (Service Unavailable)", model_name, error_str[:100])
                 else:
-                    if hasattr(e, "code"): code = e.code
-                    elif hasattr(e, "status_code"): code = e.status_code
+                    if hasattr(e, "code"):
+                        code = e.code
+                    elif hasattr(e, "status_code"):
+                        code = e.status_code
                     write_error_log(f"Gemini Error ({code})", model_name, error_str[:100])
 
                 print(f"❌ Geminiエラー ({model_name}): {error_str} (Code: {code})")
                 final_error_code = code
 
                 if code == 503:
-                    print(f"🔄 503エラーを検知しました。別のモデルで再試行します...")
+                    print("🔄 503エラーを検知しました。別のモデルで再試行します...")
                     time.sleep(2)
                     continue
                 else:
@@ -296,7 +365,7 @@ class GameRecognizerApp:
             self.gemini_frame = None
             self.gemini_error_code = None
 
-        print("\n🔍 ゲーム推定開始...")
+        print("\n🔍 ゲーム・参加者推定開始...")
         threading.Thread(target=self._recognize_boardgame_task, args=(frame,), daemon=True).start()
         return True
 
@@ -317,10 +386,22 @@ class GameRecognizerApp:
                 return res, None, frame
         return None, None, None
 
+    def _parse_member_id(self, raw_val):
+        """member_id文字列をintまたはNoneに変換"""
+        if raw_val is None:
+            return None
+        s = str(raw_val).strip().strip('"').strip("'").lower()
+        if s in ("", "null", "none", "nan", "不明", "なし", "〇〇"):
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            return None
+
     def parse_gemini_result(self, result):
-        """JSONまたはテキストから結果を抽出"""
+        """JSONまたはテキストから (class_id, member_id, confidence, reason) を抽出"""
         if not result:
-            return None, None, None
+            return None, None, None, None
 
         text = result.strip()
         if text.startswith("```"):
@@ -330,31 +411,36 @@ class GameRecognizerApp:
 
         try:
             data = json.loads(text)
-            return int(data.get("id")), data.get("confidence"), data.get("reason")
+            class_id = int(data.get("id")) if data.get("id") is not None else None
+            member_id = self._parse_member_id(data.get("member_id"))
+            confidence = data.get("confidence") or data.get("信頼度")
+            reason = data.get("reason") or data.get("根拠")
+            return class_id, member_id, confidence, reason
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-        class_id, confidence, reason = None, None, None
+        class_id, member_id, confidence, reason = None, None, None, None
         for line in result.splitlines():
-            line_lower = line.strip().lower()
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            sep = ":" if ":" in line_stripped else ("：" if "：" in line_stripped else None)
+            if not sep:
+                continue
+            val = line_stripped.split(sep, 1)[1].strip()
+
             if line_lower.startswith("id:") or line_lower.startswith("id："):
                 try:
-                    val = line.split(":", 1)[1] if ":" in line else line.split("：", 1)[1]
-                    class_id = int(val.strip())
-                except (ValueError, IndexError):
+                    class_id = int(val)
+                except ValueError:
                     pass
+            elif line_lower.startswith("member_id:") or line_lower.startswith("member_id："):
+                member_id = self._parse_member_id(val)
             elif line_lower.startswith("信頼度:") or line_lower.startswith("信頼度："):
-                try:
-                    confidence = line.split(":", 1)[1] if ":" in line else line.split("：", 1)[1]
-                except IndexError:
-                    pass
+                confidence = val
             elif line_lower.startswith("根拠:") or line_lower.startswith("根拠："):
-                try:
-                    reason = line.split(":", 1)[1] if ":" in line else line.split("：", 1)[1]
-                except IndexError:
-                    pass
+                reason = val
 
-        return class_id, confidence.strip() if confidence else None, reason.strip() if reason else None
+        return class_id, member_id, confidence, reason
 
     # ======================================
     # 状態管理・メインロジック
@@ -363,6 +449,7 @@ class GameRecognizerApp:
         self.inference_active = False
         self.inference_confirmed = False
         self.last_prediction_id = None
+        self.last_member_id = None
         self.same_prediction_count = 0
         self.next_action_time = 0
         print("🔄 推論状態をリセットしました")
@@ -372,22 +459,26 @@ class GameRecognizerApp:
 
     def process_prediction(self, result, frame=None):
         """処理結果のステータスを文字列で返す"""
-        class_id, confidence, reason = self.parse_gemini_result(result)
+        class_id, member_id, confidence, reason = self.parse_gemini_result(result)
 
         if class_id is None:
             print("⚠️ class_idを取得できませんでした")
             return "ERROR_500"
 
         print("================================")
-        print(f"🎮 推定結果 | id: {class_id} | 信頼度: {confidence} | 根拠: {reason}")
+        print(
+            f"🎮 推定結果 | id: {class_id} | member_id: {member_id} "
+            f"| 信頼度: {confidence} | 根拠: {reason}"
+        )
         print("================================")
-        self._log_prediction(result, class_id, confidence, reason)
+        self._log_prediction(result, class_id, member_id, confidence, reason)
 
         # ID=0 (ゲームをしていない/メニュー画面など)
         if class_id == 0:
-            success, code = self._send_result(0, frame)
+            success, code = self._send_result(0, member_id=None, frame=frame)
             if success:
                 self.last_prediction_id = 0
+                self.last_member_id = None
                 self.same_prediction_count = 0
                 self.inference_active = True  # SwitchがONの間はTrueを保持
                 self.inference_confirmed = False
@@ -398,22 +489,31 @@ class GameRecognizerApp:
         # 初回推定 または ID変更
         if self.last_prediction_id != class_id:
             if self.last_prediction_id is None or self.last_prediction_id == 0:
-                print(f"🎮 初回推定/再開始: id={class_id}")
+                print(f"🎮 初回推定/再開始: id={class_id}, member_id={member_id}")
             else:
-                print(f"🔄 ID変更: {self.last_prediction_id} → {class_id}")
-            
-            success, code = self._send_result(class_id, frame)
+                print(f"🔄 ID変更: {self.last_prediction_id} → {class_id} (member_id: {member_id})")
+
+            success, code = self._send_result(class_id, member_id=member_id, frame=frame)
             if success:
                 self.last_prediction_id = class_id
+                self.last_member_id = member_id
                 self.same_prediction_count = 1
                 self.inference_active = True  # SwitchがONの間はTrueを保持
                 self.schedule_next(NORMAL_INTERVAL)
                 return "SUCCESS"
             return "ERROR_429" if code == 429 else "ERROR_500"
 
-        # 同じゲームID（1以上）が連続した場合
+        # 同じゲームIDが連続した場合（member_idが新たに確定・更新された場合も送信）
         self.same_prediction_count += 1
         print(f"🔁 同じID: {self.same_prediction_count}回連続")
+
+        if member_id is not None and member_id != self.last_member_id:
+            print(f"👤 参加者ID更新: {self.last_member_id} → {member_id}")
+            success, code = self._send_result(class_id, member_id=member_id, frame=frame)
+            if success:
+                self.last_member_id = member_id
+            elif code == 429:
+                return "ERROR_429"
 
         if self.same_prediction_count >= 2:
             print("✅ ゲームを確定しました！ ⏰ 以降は長時間待機モードになります")
@@ -464,7 +564,7 @@ class GameRecognizerApp:
                 if now - self.last_switch_check_time >= SWITCH_CHECK_INTERVAL:
                     self.last_switch_check_time = now
                     packet, sw_code = self._get_switch_state()
-                    
+
                     if packet is None:
                         if sw_code == 429:
                             print("⚠️ Switch API 429エラー。1時間ストップします。")
@@ -476,7 +576,7 @@ class GameRecognizerApp:
                         # Switch: ON -> OFF
                         if not packet and self.last_packet:
                             print("🔌 Switch電源OFFを検知 ⚪ id=0を送信します")
-                            success, code = self._send_result(0)
+                            success, code = self._send_result(0, member_id=None)
                             if not success and code == 429:
                                 self.schedule_next(RATE_LIMIT_INTERVAL)
                             self.reset_prediction_state()
@@ -499,8 +599,9 @@ class GameRecognizerApp:
                         self.inference_confirmed = False
                         self.inference_active = True
                         self.last_prediction_id = None
+                        self.last_member_id = None
                         self.same_prediction_count = 0
-                
+
                 elif self.inference_active:
                     # 通常推論ターン (次回の予定時刻を超えていれば推論開始)
                     if now >= self.next_action_time:
