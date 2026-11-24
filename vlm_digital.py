@@ -61,8 +61,8 @@ class GameRecognizerApp:
         self.SWITCH_API_URL = self._get_env("SWITCH_API_URL")
         self.RESULT_API_URL = self._get_env("RESULT_API_URL")
         self.EVENTS_API_URL = self._get_env("EVENTS_API_URL")
-        self.STAYWATCH_API_USERS = self._get_env("STAYWATCH_API_USERS")
-        self.STAYWATCH_API_KEY = self._get_env("STAYWATCH_API_KEY")
+        self.STAYWATCH_API_USERS = os.getenv("STAYWATCH_API_USERS")
+        self.STAYWATCH_API_KEY = os.getenv("STAYWATCH_API_KEY")
         self.GEMINI_API_KEY = self._get_env("GEMINI_API_KEY")
 
         # 2. 初期化
@@ -125,15 +125,17 @@ class GameRecognizerApp:
     def _get_member_candidates(self):
         """
         STAYWATCH_API_USERS から参加者一覧を取得し、
-        jq -r '.[] | [.id, .name] | @tsv' 相当の「id<TAB>name」形式文字列を返す
+        「id<TAB>name」形式文字列を返す（取得できない場合は空文字を返して継続）
         """
+        if not self.STAYWATCH_API_USERS or not self.STAYWATCH_API_KEY:
+            print("⚠️ STAYWATCH_API_USERS または STAYWATCH_API_KEY が未設定のため、参加者候補なしで続行します")
+            return ""
+
         headers = {
-            "Authorization": f"Bearer {self.STAYWATCH_API_KEY}",
             "X-API-Key": self.STAYWATCH_API_KEY,
-            "Accept": "application/json",
         }
         try:
-            response = requests.get(self.STAYWATCH_API_USERS, headers=headers, timeout=10)
+            response = requests.get(self.STAYWATCH_API_USERS, headers=headers, timeout=5)
             if response.status_code in [429, 503]:
                 write_error_log(f"{response.status_code} HTTP Error", "STAYWATCH_API_USERS", response.text[:100])
             response.raise_for_status()
@@ -144,7 +146,8 @@ class GameRecognizerApp:
             elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
                 users = payload["data"]
             else:
-                raise ValueError("参加者APIレスポンスの形式が想定外です")
+                print("⚠️ 参加者APIレスポンスの形式が想定外のため、参加者候補なしで続行します")
+                return ""
 
             lines = []
             for user in users:
@@ -158,8 +161,8 @@ class GameRecognizerApp:
             if "429" in err_str or "503" in err_str:
                 err_type = "429 Rate Limit" if "429" in err_str else "503 Service Unavailable"
                 write_error_log(err_type, "STAYWATCH_API_USERS", err_str[:100])
-            print(f"❌ 参加者候補の取得に失敗しました: {e}")
-            return None
+            print(f"🔥 staywatch API (users) エラー（参加者候補なしで続行）: {e}")
+            return ""
 
     def _create_prompt(self):
         """prompt.txt を読み込み、ゲーム候補と参加者候補を埋め込む"""
@@ -175,7 +178,7 @@ class GameRecognizerApp:
 
         member_candidates = self._get_member_candidates()
         if member_candidates is None:
-            raise RuntimeError("参加者候補を取得できないため、Gemini推論を実行できません")
+            member_candidates = ""
 
         self.game_candidates_text = game_candidates
         self.member_candidates_text = member_candidates
